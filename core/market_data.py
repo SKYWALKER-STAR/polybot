@@ -42,6 +42,9 @@ class MarketData:
     bids: list[OrderBookLevel] = field(default_factory=list)
     asks: list[OrderBookLevel] = field(default_factory=list)
 
+    # 市场结算时间（UTC），由 MarketDataService 从 get_market() 获取
+    market_end_time: Optional[datetime] = None
+
     captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -87,30 +90,51 @@ class MarketDataService:
 
         Returns (yes_data, no_data).
         """
-        yes_data = self._fetch_token(self.yes_token_id, "YES")
-        no_data = self._fetch_token(self.no_token_id, "NO")
+        market_end_time = self._fetch_market_end_time()
+
+        yes_data = self._fetch_token(self.yes_token_id, "YES", market_end_time)
+        no_data = self._fetch_token(self.no_token_id, "NO", market_end_time)
 
         if self.persist_snapshots:
             self._save_snapshots(yes_data, no_data)
 
         logger.debug(
-            "Market snapshot — YES mid=%.4f  NO mid=%.4f",
+            "Market snapshot — YES mid=%.4f  NO mid=%.4f  end_time=%s",
             yes_data.midpoint or 0,
             no_data.midpoint or 0,
+            market_end_time,
         )
         return yes_data, no_data
 
     def fetch_yes(self) -> MarketData:
-        return self._fetch_token(self.yes_token_id, "YES")
+        return self._fetch_token(self.yes_token_id, "YES", self._fetch_market_end_time())
 
     def fetch_no(self) -> MarketData:
-        return self._fetch_token(self.no_token_id, "NO")
+        return self._fetch_token(self.no_token_id, "NO", self._fetch_market_end_time())
 
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
 
-    def _fetch_token(self, token_id: str, outcome: str) -> MarketData:
+    def _fetch_market_end_time(self) -> Optional[datetime]:
+        """从市场元数据中解析结算时间（UTC）。"""
+        try:
+            market = self._client.get_market(self.condition_id)
+            # Polymarket CLOB API 常见字段名
+            for key in ("end_date_iso", "endDateIso", "end_date", "endDate", "gameStartTime"):
+                raw = market.get(key)
+                if raw:
+                    return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except Exception as exc:
+            logger.warning("获取市场结算时间失败: %s", exc)
+        return None
+
+    def _fetch_token(
+        self,
+        token_id: str,
+        outcome: str,
+        market_end_time: Optional[datetime] = None,
+    ) -> MarketData:
         book_raw = self._client.get_order_book(token_id)
         midpoint_raw = self._client.get_midpoint(token_id)
         spread_raw = self._client.get_spread(token_id)
@@ -139,6 +163,7 @@ class MarketDataService:
             last_trade_price=_to_float(last_price_raw),
             bids=bids,
             asks=asks,
+            market_end_time=market_end_time,
             raw=book_raw,
         )
 

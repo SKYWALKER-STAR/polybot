@@ -201,16 +201,19 @@ class PolybBot:
 
 def _build_strategy() -> BaseStrategy:
     """
-    Instantiate and configure the active trading strategy.
+    实例化并配置当前使用的交易策略。
 
-    To use a different strategy, change the class and config here.
+    修改押注金额或触发条件请在此处调整 StrategyConfig 参数：
+      - main_bet_usdc                  主方向押注金额（USDC）
+      - hedge_bet_usdc                 对冲方向押注金额（USDC）
+      - entry_seconds_before_settlement 距结算多少秒内入场
+      - min_probability_threshold       触发阈值（0~1）
     """
     config = StrategyConfig(
-        yes_entry_max_price=0.55,
-        yes_entry_min_price=0.45,
-        order_notional_usdc=10.0,
-        limit_offset=0.01,
-        max_open_orders_per_side=1,
+        main_bet_usdc=5.0,
+        hedge_bet_usdc=1.0,
+        entry_seconds_before_settlement=60,
+        min_probability_threshold=0.90,
     )
     return Btc5MinStrategy(config=config)
 
