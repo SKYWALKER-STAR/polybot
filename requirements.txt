@@ -1,8 +1,5 @@
-# Polymarket CLOB SDK
-py-clob-client>=0.15.0
-
-# Web3 (required by py-clob-client for signing)
-web3>=6.0.0
+# Official Polymarket Python SDK
+polymarket-client
 
 # Database
 sqlalchemy>=2.0.0

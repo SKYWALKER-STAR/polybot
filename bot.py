@@ -16,10 +16,10 @@ Edit the ``_build_strategy()`` factory at the bottom of this file.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import signal
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,7 +74,7 @@ class PolybBot:
     # Lifecycle
     # ------------------------------------------------------------------ #
 
-    def start(self) -> None:
+    async def start(self) -> None:
         logger.info(
             "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  strategy=%s",
             settings.dry_run,
@@ -86,8 +86,8 @@ class PolybBot:
         logger.info("Initialising database …")
         init_db()
 
-        logger.info("Connecting to Polymarket CLOB …")
-        self._client.connect()
+        logger.info("Connecting to Polymarket …")
+        await self._client.connect()
 
         # --- component wiring ---------------------------------------
         self._market_data = MarketDataService(
@@ -118,33 +118,36 @@ class PolybBot:
 
         # --- main loop ----------------------------------------------
         self._running = True
-        while self._running:
-            try:
-                self._tick()
-            except Exception as exc:
-                logger.exception("Unhandled error in tick: %s", exc)
-                self._audit.error(str(exc), details={"context": "main_loop"})
+        try:
+            while self._running:
+                try:
+                    await self._tick()
+                except Exception as exc:
+                    logger.exception("Unhandled error in tick: %s", exc)
+                    self._audit.error(str(exc), details={"context": "main_loop"})
 
-            if self._running:
-                time.sleep(settings.poll_interval_seconds)
+                if self._running:
+                    await asyncio.sleep(settings.poll_interval_seconds)
+        finally:
+            self._strategy.on_stop()
+            self._audit.bot_stop(
+                details={"stopped_at": datetime.now(timezone.utc).isoformat()}
+            )
+            await self._client.close()
+            logger.info("=== Polybot stopped ===")
 
     def stop(self) -> None:
         logger.info("Stopping bot …")
         self._running = False
-        self._strategy.on_stop()
-        self._audit.bot_stop(
-            details={"stopped_at": datetime.now(timezone.utc).isoformat()}
-        )
-        logger.info("=== Polybot stopped ===")
 
     # ------------------------------------------------------------------ #
     # Tick
     # ------------------------------------------------------------------ #
 
-    def _tick(self) -> None:
+    async def _tick(self) -> None:
         # 1. Fetch market data
         try:
-            yes_data, no_data = self._market_data.fetch()
+            yes_data, no_data = await self._market_data.fetch()
         except Exception as exc:
             logger.error("Market data fetch failed: %s", exc)
             self._audit.record(
@@ -180,7 +183,7 @@ class PolybBot:
 
         # 3. Execute orders
         for req in order_requests:
-            result = self._order_manager.place_order(req)
+            result = await self._order_manager.place_order(req)
             try:
                 self._strategy.on_order_result(req, result)
             except Exception as exc:
@@ -226,4 +229,4 @@ if __name__ == "__main__":
     _setup_logging()
     strategy = _build_strategy()
     bot = PolybBot(strategy=strategy)
-    bot.start()
+    asyncio.run(bot.start())

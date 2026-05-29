@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from py_clob_client.clob_types import OrderType
-
 from config.settings import settings
 from core.client import PolymarketClient
 from database.connection import get_session
@@ -79,7 +77,7 @@ class OrderManager:
     # Place order
     # ------------------------------------------------------------------ #
 
-    def place_order(self, req: OrderRequest) -> OrderResult:
+    async def place_order(self, req: OrderRequest) -> OrderResult:
         """
         Validate, risk-check, and submit a limit order.
 
@@ -125,16 +123,21 @@ class OrderManager:
 
         # --- live submission --------------------------------------------
         try:
-            sdk_order_type = _map_order_type(req.order_type)
-            resp = self._client.create_limit_order(
+            resp = await self._client.create_limit_order(
                 token_id=req.token_id,
                 side=req.side,
                 size=req.size,
                 price=req.price,
-                order_type=sdk_order_type,
+                order_type=req.order_type,
             )
 
-            exchange_order_id: Optional[str] = resp.get("orderID") or resp.get("order_id")
+            if not resp.get("ok"):
+                raise RuntimeError(
+                    f"Order rejected by exchange: code={resp.get('code')} "
+                    f"message={resp.get('message')}"
+                )
+
+            exchange_order_id: Optional[str] = resp.get("order_id")
 
             self._update_order_status(
                 local_order.id,
@@ -186,7 +189,7 @@ class OrderManager:
     # Cancel order
     # ------------------------------------------------------------------ #
 
-    def cancel_order(self, local_order_id: int) -> bool:
+    async def cancel_order(self, local_order_id: int) -> bool:
         """
         Cancel an order by its local database ID.
 
@@ -214,7 +217,7 @@ class OrderManager:
             return False
 
         try:
-            self._client.cancel_order(order.polymarket_order_id)
+            await self._client.cancel_order(order.polymarket_order_id)
             self._update_order_status(local_order_id, OrderStatus.CANCELLED)
             logger.info(
                 "Cancelled order local_id=%s exchange_id=%s",
@@ -240,7 +243,7 @@ class OrderManager:
             )
             return False
 
-    def cancel_all(self) -> bool:
+    async def cancel_all(self) -> bool:
         """Cancel all open orders on the exchange account."""
         if settings.dry_run:
             logger.info("[DRY-RUN] Would cancel all open orders")
@@ -252,7 +255,7 @@ class OrderManager:
             return True
 
         try:
-            self._client.cancel_all_orders()
+            await self._client.cancel_all_orders()
             logger.info("All open orders cancelled.")
             self._audit.record(
                 action=AuditAction.CANCEL_ALL,
@@ -332,15 +335,6 @@ def _req_to_dict(req: OrderRequest) -> dict:
         "order_type": req.order_type,
         "strategy_tag": req.strategy_tag,
     }
-
-
-def _map_order_type(order_type_str: str) -> OrderType:
-    mapping = {
-        "GTC": OrderType.GTC,
-        "FOK": OrderType.FOK,
-        "GTD": OrderType.GTD,
-    }
-    return mapping.get(order_type_str.upper(), OrderType.GTC)
 
 
 # Avoid circular import — import AuditLogger type for annotation only.

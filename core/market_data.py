@@ -84,16 +84,16 @@ class MarketDataService:
     # Public API
     # ------------------------------------------------------------------ #
 
-    def fetch(self) -> tuple[MarketData, MarketData]:
+    async def fetch(self) -> tuple[MarketData, MarketData]:
         """
         Fetch the current order book for both YES and NO tokens.
 
         Returns (yes_data, no_data).
         """
-        market_end_time = self._fetch_market_end_time()
+        market_end_time = await self._fetch_market_end_time()
 
-        yes_data = self._fetch_token(self.yes_token_id, "YES", market_end_time)
-        no_data = self._fetch_token(self.no_token_id, "NO", market_end_time)
+        yes_data = await self._fetch_token(self.yes_token_id, "YES", market_end_time)
+        no_data = await self._fetch_token(self.no_token_id, "NO", market_end_time)
 
         if self.persist_snapshots:
             self._save_snapshots(yes_data, no_data)
@@ -106,51 +106,70 @@ class MarketDataService:
         )
         return yes_data, no_data
 
-    def fetch_yes(self) -> MarketData:
-        return self._fetch_token(self.yes_token_id, "YES", self._fetch_market_end_time())
+    async def fetch_yes(self) -> MarketData:
+        return await self._fetch_token(self.yes_token_id, "YES", await self._fetch_market_end_time())
 
-    def fetch_no(self) -> MarketData:
-        return self._fetch_token(self.no_token_id, "NO", self._fetch_market_end_time())
+    async def fetch_no(self) -> MarketData:
+        return await self._fetch_token(self.no_token_id, "NO", await self._fetch_market_end_time())
 
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
 
-    def _fetch_market_end_time(self) -> Optional[datetime]:
-        """从市场元数据中解析结算时间（UTC）。"""
+    async def _fetch_market_end_time(self) -> Optional[datetime]:
+        """从 SDK 市场模型中提取结算时间（UTC）。"""
         try:
-            market = self._client.get_market(self.condition_id)
-            # Polymarket CLOB API 常见字段名
-            for key in ("end_date_iso", "endDateIso", "end_date", "endDate", "gameStartTime"):
-                raw = market.get(key)
-                if raw:
-                    return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            market = await self._client.get_market(self.condition_id)
+            # New SDK: market.state.end_date is a datetime | None
+            state = getattr(market, "state", None)
+            end_date = getattr(state, "end_date", None)
+            if end_date is not None:
+                if end_date.tzinfo is None:
+                    return end_date.replace(tzinfo=timezone.utc)
+                return end_date
         except Exception as exc:
             logger.warning("获取市场结算时间失败: %s", exc)
         return None
 
-    def _fetch_token(
+    async def _fetch_token(
         self,
         token_id: str,
         outcome: str,
         market_end_time: Optional[datetime] = None,
     ) -> MarketData:
-        book_raw = self._client.get_order_book(token_id)
-        midpoint_raw = self._client.get_midpoint(token_id)
-        spread_raw = self._client.get_spread(token_id)
-        last_price_raw = self._client.get_last_trade_price(token_id)
+        # Single request — all price fields are derived from the order book.
+        book = await self._client.get_order_book(token_id)
+
+        # The SDK returns model objects; bids/asks are sequences of entries
+        # with .price and .size attributes (Decimal).
+        raw_bids = getattr(book, "bids", None) or []
+        raw_asks = getattr(book, "asks", None) or []
 
         bids = [
-            OrderBookLevel(price=float(lvl["price"]), size=float(lvl["size"]))
-            for lvl in (book_raw.get("bids") or [])
+            OrderBookLevel(price=float(lvl.price), size=float(lvl.size))
+            for lvl in raw_bids
         ]
         asks = [
-            OrderBookLevel(price=float(lvl["price"]), size=float(lvl["size"]))
-            for lvl in (book_raw.get("asks") or [])
+            OrderBookLevel(price=float(lvl.price), size=float(lvl.size))
+            for lvl in raw_asks
         ]
 
         best_bid = bids[0].price if bids else None
         best_ask = asks[0].price if asks else None
+
+        midpoint: Optional[float] = None
+        if best_bid is not None and best_ask is not None:
+            midpoint = (best_bid + best_ask) / 2
+        elif best_bid is not None:
+            midpoint = best_bid
+        elif best_ask is not None:
+            midpoint = best_ask
+
+        spread: Optional[float] = None
+        if best_bid is not None and best_ask is not None:
+            spread = best_ask - best_bid
+
+        last_trade_price = _to_float(getattr(book, "last_trade_price", None))
 
         return MarketData(
             condition_id=self.condition_id,
@@ -158,13 +177,13 @@ class MarketDataService:
             outcome=outcome,
             best_bid=best_bid,
             best_ask=best_ask,
-            spread=_to_float(spread_raw),
-            midpoint=_to_float(midpoint_raw),
-            last_trade_price=_to_float(last_price_raw),
+            spread=spread,
+            midpoint=midpoint,
+            last_trade_price=last_trade_price,
             bids=bids,
             asks=asks,
             market_end_time=market_end_time,
-            raw=book_raw,
+            raw={},
         )
 
     def _save_snapshots(self, *snapshots: MarketData) -> None:

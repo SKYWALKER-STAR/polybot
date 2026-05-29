@@ -18,18 +18,17 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ #
-    # Polymarket CLOB API
+    # Polymarket SDK
     # ------------------------------------------------------------------ #
-    clob_host: str = Field(default="https://clob.polymarket.com")
-    chain_id: int = Field(default=137, description="Polygon mainnet = 137")
-
     # Wallet private key (hex, with or without 0x prefix)
     private_key: str = Field(description="Ethereum private key for order signing")
 
-    # L2 API credentials (optional; obtained via derive_api_key)
-    api_key: Optional[str] = Field(default=None)
-    api_secret: Optional[str] = Field(default=None)
-    api_passphrase: Optional[str] = Field(default=None)
+    # Optional: Polymarket wallet address. When set, the SDK uses this as the
+    # trading wallet while the private key acts as the signer only.
+    wallet_address: Optional[str] = Field(
+        default=None,
+        description="Polymarket wallet address (defaults to signer address when unset)",
+    )
 
     # ------------------------------------------------------------------ #
     # Target market identifiers

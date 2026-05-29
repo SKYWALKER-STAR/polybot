@@ -1,20 +1,18 @@
 """
-Thin, stateful wrapper around the Polymarket CLOB Python client.
+Async wrapper around the official Polymarket Python SDK (polymarket-client).
 
 Responsibilities
 ----------------
-* Initialise and hold the authenticated ClobClient instance.
-* Translate SDK types into plain dicts / dataclasses so the rest of the
-  codebase does not depend on py-clob-client internals.
+* Initialise and hold an authenticated AsyncSecureClient instance.
+* Translate SDK models into plain dicts so the rest of the codebase
+  does not depend on SDK internals.
 * Raise descriptive exceptions on transport or auth errors.
 
-Authentication flow
--------------------
-1. The bot calls ``connect()`` once at startup.
-2. If L2 API credentials (api_key / api_secret / api_passphrase) are
-   configured, they are used for order-writing endpoints.
-3. If they are absent, the bot falls back to deriving them from the wallet
-   private key via ``derive_api_key()``.
+Authentication
+--------------
+The SDK authenticates with ``private_key``.  Set ``wallet_address`` in
+settings when the signing key differs from the Polymarket wallet (e.g.
+a hardware-wallet proxy setup).
 """
 
 from __future__ import annotations
@@ -22,153 +20,156 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+from polymarket import AsyncSecureClient, PolymarketError
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Map human-friendly strings to the constants used by py-clob-client.
 BUY = "BUY"
 SELL = "SELL"
 
 
 class PolymarketClient:
-    """Authenticated wrapper around ClobClient."""
+    """Async wrapper around AsyncSecureClient from the official SDK."""
 
     def __init__(self) -> None:
-        self._client: Optional[ClobClient] = None
+        self._client: Optional[AsyncSecureClient] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
         """
-        Establish authenticated connection to the CLOB API.
+        Initialise the authenticated SDK client.
         Must be called once before any other method.
         """
-        creds: Optional[ApiCreds] = None
-        if settings.api_key:
-            creds = ApiCreds(
-                api_key=settings.api_key,
-                api_secret=settings.api_secret or "",
-                api_passphrase=settings.api_passphrase or "",
-            )
-
-        self._client = ClobClient(
-            host=settings.clob_host,
-            chain_id=settings.chain_id,
-            key=settings.private_key,
-            creds=creds,
+        self._client = await AsyncSecureClient.create(
+            private_key=settings.private_key,
+            wallet=settings.wallet_address or None,
         )
+        logger.info("Connected to Polymarket via AsyncSecureClient")
 
-        # If no creds were provided, derive them now so order-write endpoints work.
-        if creds is None:
-            logger.info("No API credentials found — deriving from private key …")
-            resp = self._client.derive_api_key()
-            derived = ApiCreds(
-                api_key=resp.get("apiKey", ""),
-                api_secret=resp.get("secret", ""),
-                api_passphrase=resp.get("passphrase", ""),
-            )
-            self._client.set_api_creds(derived)
-            logger.info("API credentials derived successfully.")
-
-        logger.info("Connected to Polymarket CLOB at %s", settings.clob_host)
+    async def close(self) -> None:
+        """Release underlying network transports."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
 
     @property
-    def client(self) -> ClobClient:
+    def client(self) -> AsyncSecureClient:
         if self._client is None:
             raise RuntimeError("PolymarketClient not connected — call connect() first.")
         return self._client
 
     # ------------------------------------------------------------------ #
-    # Market data  (read-only, no auth required)
+    # Market data  (read-only)
     # ------------------------------------------------------------------ #
 
-    def get_market(self, condition_id: str) -> dict[str, Any]:
-        """Return metadata for a single market."""
-        return self.client.get_market(condition_id)  # type: ignore[return-value]
+    async def get_market(self, condition_id: str) -> Any:
+        """Return the Market SDK model for the given condition ID."""
+        return await self.client.get_market(id=condition_id)
 
-    def get_order_book(self, token_id: str) -> dict[str, Any]:
-        """Return the full order book for a token (YES or NO side)."""
-        return self.client.get_order_book(token_id)  # type: ignore[return-value]
-
-    def get_last_trade_price(self, token_id: str) -> str:
-        return self.client.get_last_trade_price(token_id)  # type: ignore[return-value]
-
-    def get_midpoint(self, token_id: str) -> str:
-        return self.client.get_midpoint(token_id)  # type: ignore[return-value]
-
-    def get_spread(self, token_id: str) -> str:
-        return self.client.get_spread(token_id)  # type: ignore[return-value]
-
-    def get_tick_size(self, token_id: str) -> str:
-        return self.client.get_tick_size(token_id)  # type: ignore[return-value]
+    async def get_order_book(self, token_id: str) -> Any:
+        """Return the order book SDK model for a token."""
+        return await self.client.get_order_book(token_id=token_id)
 
     # ------------------------------------------------------------------ #
     # Order management  (requires auth)
     # ------------------------------------------------------------------ #
 
-    def create_limit_order(
+    async def create_limit_order(
         self,
         token_id: str,
         side: str,
         size: float,
         price: float,
-        order_type: OrderType = OrderType.GTC,
+        order_type: str = "GTC",
     ) -> dict[str, Any]:
         """
-        Sign and submit a limit order.
+        Sign and submit a limit order via the official SDK.
 
         Parameters
         ----------
-        token_id:   CLOB token ID (YES or NO token).
+        token_id:   SDK token ID (YES or NO outcome token).
         side:       "BUY" or "SELL".
-        size:       Number of shares (not USDC notional).
-        price:      Limit price in [0, 1] (binary probability).
-        order_type: GTC (default), FOK, or GTD.
+        size:       Number of shares.
+        price:      Limit price in [0, 1].
+        order_type: Currently only "GTC" is mapped; FOK/GTD reserved for
+                    future use via place_market_order / place_expiring_limit_order.
 
         Returns
         -------
-        Raw exchange response dict (includes ``orderID`` on success).
+        Dict with keys: ``ok`` (bool), ``order_id`` (str | None),
+        ``code`` and ``message`` on rejection.
         """
-        order_args = OrderArgs(
+        response = await self.client.place_limit_order(
             token_id=token_id,
-            price=price,
-            size=size,
             side=side,
+            price=str(price),
+            size=str(size),
         )
-        signed_order = self.client.create_order(order_args)
-        return self.client.post_order(signed_order, order_type)  # type: ignore[return-value]
+        return {
+            "ok": response.ok,
+            "order_id": response.order_id if response.ok else None,
+            "code": getattr(response, "code", None),
+            "message": getattr(response, "message", None),
+        }
 
-    def cancel_order(self, order_id: str) -> dict[str, Any]:
+    async def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Cancel a single open order by its exchange order ID."""
-        return self.client.cancel(order_id)  # type: ignore[return-value]
+        await self.client.cancel_order(order_id=order_id)
+        return {"ok": True}
 
-    def cancel_all_orders(self) -> dict[str, Any]:
-        """Cancel every open order on the account."""
-        return self.client.cancel_all()  # type: ignore[return-value]
+    async def cancel_all_orders(self) -> dict[str, Any]:
+        """Cancel all open orders by iterating list_open_orders."""
+        cancelled: list[str] = []
+        async for page in self.client.list_open_orders():
+            for order in page.items:
+                try:
+                    await self.client.cancel_order(order_id=order.order_id)
+                    cancelled.append(order.order_id)
+                except PolymarketError as exc:
+                    logger.warning("Failed to cancel order %s: %s", order.order_id, exc)
+        return {"cancelled": cancelled}
 
-    def get_open_orders(
+    async def get_open_orders(
         self,
         market: Optional[str] = None,
         asset_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return open orders, optionally filtered by market or asset."""
+        """Return open orders as a list of plain dicts."""
         kwargs: dict[str, Any] = {}
         if market:
             kwargs["market"] = market
-        if asset_id:
-            kwargs["asset_id"] = asset_id
-        return self.client.get_orders(**kwargs)  # type: ignore[return-value]
+        results: list[dict[str, Any]] = []
+        async for page in self.client.list_open_orders(**kwargs):
+            for o in page.items:
+                results.append({
+                    "order_id": o.order_id,
+                    "token_id": str(getattr(o, "token_id", "")),
+                    "side": str(getattr(o, "side", "")),
+                    "price": float(o.price) if getattr(o, "price", None) is not None else None,
+                    "size": float(o.size) if getattr(o, "size", None) is not None else None,
+                    "status": str(getattr(o, "status", "")),
+                })
+        return results
 
-    def get_positions(self) -> list[dict[str, Any]]:
-        """Return current token positions held by the account."""
-        return self.client.get_positions()  # type: ignore[return-value]
+    async def get_positions(self) -> list[dict[str, Any]]:
+        """Return current token positions for the authenticated wallet."""
+        results: list[dict[str, Any]] = []
+        async for page in self.client.list_positions():
+            for pos in page.items:
+                results.append({
+                    "market_id": str(getattr(pos, "market_id", "")),
+                    "outcome": str(getattr(pos, "outcome", "")),
+                    "size": float(pos.size) if getattr(pos, "size", None) is not None else None,
+                    "value": float(pos.value) if getattr(pos, "value", None) is not None else None,
+                })
+        return results
 
-    def get_balance(self) -> dict[str, Any]:
-        """Return USDC balance and allowance information."""
-        return self.client.get_balance_allowance()  # type: ignore[return-value]
+    async def get_balance(self) -> dict[str, Any]:
+        """Return portfolio value for the authenticated wallet."""
+        value = await self.client.get_portfolio_value()
+        return {"portfolio_value": str(value) if value is not None else None}
