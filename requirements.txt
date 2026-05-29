@@ -1,0 +1,14 @@
+# Polymarket CLOB SDK
+py-clob-client>=0.15.0
+
+# Web3 (required by py-clob-client for signing)
+web3>=6.0.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+
+# Configuration
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
