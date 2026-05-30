@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from core.client import PolymarketClient
+from core.market_resolver import MarketInfo, MarketResolver
 from database.connection import get_session
 from database.models import MarketSnapshot
 
@@ -31,7 +32,7 @@ class MarketData:
 
     condition_id: str
     token_id: str
-    outcome: str                    # "YES" or "NO"
+    outcome: str                    # "UP" or "DOWN"
 
     best_bid: Optional[float]
     best_ask: Optional[float]
@@ -42,8 +43,10 @@ class MarketData:
     bids: list[OrderBookLevel] = field(default_factory=list)
     asks: list[OrderBookLevel] = field(default_factory=list)
 
-    # 市场结算时间（UTC），由 MarketDataService 从 get_market() 获取
+    # 市场结算时间（ET），由 MarketResolver 从 Event 信息中获取
     market_end_time: Optional[datetime] = None
+    # Gamma API outcomePrices 提供的市场概率价格（UI 上显示的价格）
+    gamma_price: Optional[float] = None
 
     captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw: dict[str, Any] = field(default_factory=dict)
@@ -58,78 +61,101 @@ class MarketDataService:
     """
     Fetches market data for the BTC 5-minute market and persists snapshots.
 
+    通过 MarketResolver 动态跟踪当前活跃的 5-min 市场，市场到期后自动切换到下一个。
+
     Example
     -------
     ::
 
-        svc = MarketDataService(client, condition_id, yes_token_id, no_token_id)
-        yes_data, no_data = svc.fetch()
+        svc = MarketDataService(client, resolver=MarketResolver(1780073700))
+        up_data, down_data = await svc.fetch()
     """
 
     def __init__(
         self,
         client: PolymarketClient,
-        condition_id: str,
-        yes_token_id: str,
-        no_token_id: str,
+        resolver: MarketResolver,
         persist_snapshots: bool = True,
     ) -> None:
         self._client = client
-        self.condition_id = condition_id
-        self.yes_token_id = yes_token_id
-        self.no_token_id = no_token_id
+        self._resolver = resolver
         self.persist_snapshots = persist_snapshots
+        # 以下三个字段由 _sync_market() 在每次 fetch 前更新
+        self.condition_id: str = ""
+        self.up_token_id: str = ""
+        self.down_token_id: str = ""
+        self._current_market: Optional[MarketInfo] = None
 
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
 
+    async def _sync_market(self) -> MarketInfo:
+        """
+        从 MarketResolver 获取当前有效市场，并同步 condition_id / token_id。
+        若市场发生切换，打印日志。
+        """
+        info = await self._resolver.get_active_market()
+        if (
+            self._current_market is None
+            or self._current_market.condition_id != info.condition_id
+        ):
+            logger.info(
+                "MarketDataService — 切换市场: slug=%s  condition=%s  "
+                "结算时间(UTC)=%s  剩余=%.0fs",
+                info.slug,
+                info.condition_id,
+                info.end_time.isoformat(),
+                info.seconds_to_expiry,
+            )
+        self._current_market = info
+        self.condition_id = info.condition_id
+        self.up_token_id = info.up_token_id
+        self.down_token_id = info.down_token_id
+        return info
+
     async def fetch(self) -> tuple[MarketData, MarketData]:
         """
-        Fetch the current order book for both YES and NO tokens.
+        Fetch the current order book for both UP and DOWN tokens.
 
-        Returns (yes_data, no_data).
+        Returns (up_data, down_data).
         """
-        market_end_time = await self._fetch_market_end_time()
+        market_info = await self._sync_market()
+        market_end_time = market_info.end_time
 
-        yes_data = await self._fetch_token(self.yes_token_id, "YES", market_end_time)
-        no_data = await self._fetch_token(self.no_token_id, "NO", market_end_time)
+        up_data   = await self._fetch_token(self.up_token_id,   "UP",   market_end_time)
+        down_data = await self._fetch_token(self.down_token_id, "DOWN", market_end_time)
+
+        # 注入 Gamma API 提供的市场概率价格
+        up_data.gamma_price   = market_info.up_price
+        down_data.gamma_price = market_info.down_price
 
         if self.persist_snapshots:
-            self._save_snapshots(yes_data, no_data)
+            self._save_snapshots(up_data, down_data)
 
         logger.debug(
-            "Market snapshot — YES mid=%.4f  NO mid=%.4f  end_time=%s",
-            yes_data.midpoint or 0,
-            no_data.midpoint or 0,
+            "Market snapshot — UP mid=%.4f  DOWN mid=%.4f  end_time=%s",
+            up_data.midpoint or 0,
+            down_data.midpoint or 0,
             market_end_time,
         )
-        return yes_data, no_data
+        return up_data, down_data
 
-    async def fetch_yes(self) -> MarketData:
-        return await self._fetch_token(self.yes_token_id, "YES", await self._fetch_market_end_time())
+    async def fetch_up(self) -> MarketData:
+        info = await self._sync_market()
+        data = await self._fetch_token(self.up_token_id, "UP", info.end_time)
+        data.gamma_price = info.up_price
+        return data
 
-    async def fetch_no(self) -> MarketData:
-        return await self._fetch_token(self.no_token_id, "NO", await self._fetch_market_end_time())
+    async def fetch_down(self) -> MarketData:
+        info = await self._sync_market()
+        data = await self._fetch_token(self.down_token_id, "DOWN", info.end_time)
+        data.gamma_price = info.down_price
+        return data
 
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
-
-    async def _fetch_market_end_time(self) -> Optional[datetime]:
-        """从 SDK 市场模型中提取结算时间（UTC）。"""
-        try:
-            market = await self._client.get_market(self.condition_id)
-            # New SDK: market.state.end_date is a datetime | None
-            state = getattr(market, "state", None)
-            end_date = getattr(state, "end_date", None)
-            if end_date is not None:
-                if end_date.tzinfo is None:
-                    return end_date.replace(tzinfo=timezone.utc)
-                return end_date
-        except Exception as exc:
-            logger.warning("获取市场结算时间失败: %s", exc)
-        return None
 
     async def _fetch_token(
         self,
@@ -154,8 +180,8 @@ class MarketDataService:
             for lvl in raw_asks
         ]
 
-        best_bid = bids[0].price if bids else None
-        best_ask = asks[0].price if asks else None
+        best_bid = bids[-1].price if bids else None   # bids 升序，最高买价在末尾
+        best_ask = asks[-1].price if asks else None   # asks 降序，最低卖价在末尾
 
         midpoint: Optional[float] = None
         if best_bid is not None and best_ask is not None:

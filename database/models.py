@@ -44,8 +44,8 @@ class OrderSide(str, enum.Enum):
 
 
 class Outcome(str, enum.Enum):
-    YES = "YES"
-    NO = "NO"
+    UP = "UP"
+    DOWN = "DOWN"
 
 
 class OrderStatus(str, enum.Enum):
@@ -189,7 +189,7 @@ class MarketSnapshot(Base):
     condition_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_id: Mapped[str] = mapped_column(String(128), nullable=False)
 
-    # Best bid / ask for the token (YES or NO)
+    # Best bid / ask for the token (UP or DOWN)
     best_bid: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     best_ask: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     spread: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)

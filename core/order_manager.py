@@ -103,7 +103,7 @@ class OrderManager:
                                error=msg)
 
         # --- persist locally (status = PENDING) -------------------------
-        local_order = self._create_local_order(req)
+        local_order_id = self._create_local_order(req)
 
         # --- dry-run shortcut -------------------------------------------
         if settings.dry_run:
@@ -111,14 +111,14 @@ class OrderManager:
                 "[DRY-RUN] Would place %s %s order — outcome=%s price=%.4f size=%.2f",
                 req.side, req.order_type, req.outcome, req.price, req.size,
             )
-            self._update_order_status(local_order.id, OrderStatus.OPEN, dry_run=True)
+            self._update_order_status(local_order_id, OrderStatus.OPEN, dry_run=True)
             self._audit.record(
                 action=AuditAction.PLACE_ORDER,
                 result=AuditResult.SKIPPED,
-                details={"local_order_id": local_order.id, "dry_run": True,
+                details={"local_order_id": local_order_id, "dry_run": True,
                          "request": _req_to_dict(req)},
             )
-            return OrderResult(success=True, local_order_id=local_order.id,
+            return OrderResult(success=True, local_order_id=local_order_id,
                                exchange_order_id=None, is_dry_run=True)
 
         # --- live submission --------------------------------------------
@@ -140,7 +140,7 @@ class OrderManager:
             exchange_order_id: Optional[str] = resp.get("order_id")
 
             self._update_order_status(
-                local_order.id,
+                local_order_id,
                 OrderStatus.OPEN,
                 exchange_order_id=exchange_order_id,
             )
@@ -148,14 +148,14 @@ class OrderManager:
             logger.info(
                 "Order placed — local_id=%s exchange_id=%s outcome=%s side=%s "
                 "price=%.4f size=%.2f",
-                local_order.id, exchange_order_id, req.outcome, req.side,
+                local_order_id, exchange_order_id, req.outcome, req.side,
                 req.price, req.size,
             )
             self._audit.record(
                 action=AuditAction.PLACE_ORDER,
                 result=AuditResult.SUCCESS,
                 details={
-                    "local_order_id": local_order.id,
+                    "local_order_id": local_order_id,
                     "exchange_order_id": exchange_order_id,
                     "request": _req_to_dict(req),
                     "response": resp,
@@ -163,23 +163,23 @@ class OrderManager:
             )
             return OrderResult(
                 success=True,
-                local_order_id=local_order.id,
+                local_order_id=local_order_id,
                 exchange_order_id=exchange_order_id,
                 is_dry_run=False,
             )
 
         except Exception as exc:
             logger.exception("Failed to place order: %s", exc)
-            self._update_order_status(local_order.id, OrderStatus.FAILED)
+            self._update_order_status(local_order_id, OrderStatus.FAILED)
             self._audit.record(
                 action=AuditAction.PLACE_ORDER,
                 result=AuditResult.FAILURE,
-                details={"local_order_id": local_order.id, "request": _req_to_dict(req)},
+                details={"local_order_id": local_order_id, "request": _req_to_dict(req)},
                 error_message=str(exc),
             )
             return OrderResult(
                 success=False,
-                local_order_id=local_order.id,
+                local_order_id=local_order_id,
                 exchange_order_id=None,
                 is_dry_run=False,
                 error=str(exc),
@@ -210,18 +210,18 @@ class OrderManager:
             )
             return True
 
-        if not order.polymarket_order_id:
+        if not order["polymarket_order_id"]:
             logger.warning(
                 "Order id=%s has no exchange ID — cannot cancel remotely", local_order_id
             )
             return False
 
         try:
-            await self._client.cancel_order(order.polymarket_order_id)
+            await self._client.cancel_order(order["polymarket_order_id"])
             self._update_order_status(local_order_id, OrderStatus.CANCELLED)
             logger.info(
                 "Cancelled order local_id=%s exchange_id=%s",
-                local_order_id, order.polymarket_order_id,
+                local_order_id, order["polymarket_order_id"],
             )
             self._audit.record(
                 action=AuditAction.CANCEL_ORDER,
@@ -275,7 +275,8 @@ class OrderManager:
     # Helpers
     # ------------------------------------------------------------------ #
 
-    def _create_local_order(self, req: OrderRequest) -> Order:
+    def _create_local_order(self, req: OrderRequest) -> int:
+        """Persist a new PENDING order and return its integer primary key."""
         order = Order(
             condition_id=req.condition_id,
             token_id=req.token_id,
@@ -295,8 +296,9 @@ class OrderManager:
         with get_session() as session:
             session.add(order)
             session.flush()
-            session.refresh(order)
-            return order
+            # 在 Session 关闭前读取 id，避免 Session 关闭后 detached 访问
+            local_id: int = order.id
+        return local_id
 
     def _update_order_status(
         self,
@@ -315,9 +317,17 @@ class OrderManager:
                 if dry_run:
                     order.is_dry_run = True
 
-    def _load_order(self, local_id: int) -> Optional[Order]:
+    def _load_order(self, local_id: int) -> Optional[dict]:
+        """Return a plain dict to avoid DetachedInstanceError after session closes."""
         with get_session() as session:
-            return session.get(Order, local_id)
+            order = session.get(Order, local_id)
+            if order is None:
+                return None
+            return {
+                "id": order.id,
+                "polymarket_order_id": order.polymarket_order_id,
+                "status": order.status,
+            }
 
 
 # ------------------------------------------------------------------ #

@@ -4,12 +4,12 @@ BTC 5分钟涨跌策略
 交易逻辑
 --------
 当距离本轮市场结算时间还剩 ``entry_seconds_before_settlement`` 秒（默认 60s）时：
-  - 若 YES（涨）的最优卖价 >= ``min_probability_threshold``（默认 0.90），则：
-      · 买入 ``main_bet_usdc`` 美元的 YES（主仓）
-      · 买入 ``hedge_bet_usdc`` 美元的 NO（对冲仓）
-  - 若 NO（跌）的最优卖价 >= ``min_probability_threshold``，则：
-      · 买入 ``main_bet_usdc`` 美元的 NO（主仓）
-      · 买入 ``hedge_bet_usdc`` 美元的 YES（对冲仓）
+  - 若 UP（涨）的最优卖价 >= ``min_probability_threshold``（默认 0.90），则：
+      · 买入 ``main_bet_usdc`` 美元的 UP（主仓）
+      · 买入 ``hedge_bet_usdc`` 美元的 DOWN（对冲仓）
+  - 若 DOWN（跌）的最优卖价 >= ``min_probability_threshold``，则：
+      · 买入 ``main_bet_usdc`` 美元的 DOWN（主仓）
+      · 买入 ``hedge_bet_usdc`` 美元的 UP（对冲仓）
   - 每轮结算周期只入场一次，防止重复下单。
 
 修改押注金额
@@ -66,9 +66,9 @@ class StrategyConfig:
 # ------------------------------------------------------------------ #
 
 class Signal(str, Enum):
-    NONE = "NONE"
-    BUY_YES = "BUY_YES"   # YES 概率 >= 阈值：主押 YES，对冲 NO
-    BUY_NO  = "BUY_NO"    # NO 概率  >= 阈值：主押 NO，对冲 YES
+    NONE    = "NONE"
+    BUY_UP   = "BUY_UP"    # UP 概率   >= 阈值：主押 UP，对冲 DOWN
+    BUY_DOWN = "BUY_DOWN"  # DOWN 概率 >= 阈值：主押 DOWN，对冲 UP
 
 
 # ------------------------------------------------------------------ #
@@ -109,19 +109,19 @@ class Btc5MinStrategy(BaseStrategy):
             self._cfg.entry_seconds_before_settlement,
         )
 
-    def on_tick(self, yes_data: MarketData, no_data: MarketData) -> list[OrderRequest]:
-        if not yes_data.is_valid or not no_data.is_valid:
+    def on_tick(self, up_data: MarketData, down_data: MarketData) -> list[OrderRequest]:
+        if not up_data.is_valid or not down_data.is_valid:
             logger.warning("[%s] 行情数据不完整，跳过本次 tick。", self.name)
             return []
 
-        signal = self._generate_signal(yes_data, no_data)
+        signal = self._generate_signal(up_data, down_data)
         if signal == Signal.NONE:
             return []
 
-        orders = self._build_orders(signal, yes_data, no_data)
+        orders = self._build_orders(signal, up_data, down_data)
         if orders:
             # 标记本轮结算周期已入场，避免重复下单
-            self._state.last_bet_settlement = yes_data.market_end_time
+            self._state.last_bet_settlement = up_data.market_end_time
 
         return orders
 
@@ -152,15 +152,15 @@ class Btc5MinStrategy(BaseStrategy):
     # 信号生成
     # ------------------------------------------------------------------ #
 
-    def _generate_signal(self, yes_data: MarketData, no_data: MarketData) -> Signal:
+    def _generate_signal(self, up_data: MarketData, down_data: MarketData) -> Signal:
         """
         核心信号逻辑：
           1. 检查是否已获取结算时间。
           2. 检查距离结算是否在入场窗口内（<= entry_seconds_before_settlement）。
           3. 检查是否已在本周期入场过。
-          4. 判断 YES 或 NO 的最优卖价是否达到阈值。
+          4. 判断 UP 或 DOWN 的最优卖价是否达到阈值。
         """
-        end_time = yes_data.market_end_time
+        end_time = up_data.market_end_time
         if end_time is None:
             logger.warning("[%s] 未能获取市场结算时间，跳过。", self.name)
             return Signal.NONE
@@ -188,33 +188,45 @@ class Btc5MinStrategy(BaseStrategy):
             logger.debug("[%s] 本周期已入场，不重复下单。", self.name)
             return Signal.NONE
 
-        # 使用最优卖价作为实际买入价格
-        yes_price = yes_data.best_ask if yes_data.best_ask is not None else yes_data.midpoint
-        no_price  = no_data.best_ask  if no_data.best_ask  is not None else no_data.midpoint
+        # 价格使用 best_ask（与 Polymarket UI 显示一致）
+        # UI 上 "Up 22¢" 即 UP best_ask=0.22，两侧之和 > 1.0 属正常（包含 spread）
+        up_price   = up_data.best_ask
+        down_price = down_data.best_ask
 
-        if yes_price is None or no_price is None:
-            logger.warning("[%s] 价格数据缺失（best_ask/midpoint 均为 None），跳过。", self.name)
+        if up_price is None or down_price is None:
+            logger.warning("[%s] best_ask 数据缺失，跳过。", self.name)
+            return Signal.NONE
+
+        # 流动性检查：spread 过大说明订单簿空虚，价格不可信，跳过
+        max_spread = 0.5
+        up_spread   = up_data.spread   if up_data.spread   is not None else 1.0
+        down_spread = down_data.spread if down_data.spread is not None else 1.0
+        if up_spread > max_spread or down_spread > max_spread:
+            logger.info(
+                "[%s] 流动性不足，跳过（up_spread=%.3f  down_spread=%.3f  阈值=%.2f）",
+                self.name, up_spread, down_spread, max_spread,
+            )
             return Signal.NONE
 
         logger.info(
-            "[%s] ★ 入场窗口 ★ 距结算 %.0fs  YES=%.4f  NO=%.4f  阈值=%.2f",
-            self.name, seconds_remaining, yes_price, no_price,
+            "[%s] ★ 入场窗口 ★ 距结算 %.0fs  UP=%.4f  DOWN=%.4f  阈值=%.2f",
+            self.name, seconds_remaining, up_price, down_price,
             self._cfg.min_probability_threshold,
         )
 
-        if yes_price >= self._cfg.min_probability_threshold:
-            logger.info("[%s] 信号: YES 概率 %.4f >= %.2f → 主押 YES，对冲 NO",
-                        self.name, yes_price, self._cfg.min_probability_threshold)
-            return Signal.BUY_YES
+        if up_price >= self._cfg.min_probability_threshold:
+            logger.info("[%s] 信号: UP 概率 %.4f >= %.2f → 主押 UP，对冲 DOWN",
+                        self.name, up_price, self._cfg.min_probability_threshold)
+            return Signal.BUY_UP
 
-        if no_price >= self._cfg.min_probability_threshold:
-            logger.info("[%s] 信号: NO 概率 %.4f >= %.2f → 主押 NO，对冲 YES",
-                        self.name, no_price, self._cfg.min_probability_threshold)
-            return Signal.BUY_NO
+        if down_price >= self._cfg.min_probability_threshold:
+            logger.info("[%s] 信号: DOWN 概率 %.4f >= %.2f → 主押 DOWN，对冲 UP",
+                        self.name, down_price, self._cfg.min_probability_threshold)
+            return Signal.BUY_DOWN
 
         logger.info(
-            "[%s] 两侧概率均未达阈值（YES=%.4f, NO=%.4f），不入场。",
-            self.name, yes_price, no_price,
+            "[%s] 两侧概率均未达阈值（UP=%.4f, DOWN=%.4f），不入场。",
+            self.name, up_price, down_price,
         )
         return Signal.NONE
 
@@ -225,8 +237,8 @@ class Btc5MinStrategy(BaseStrategy):
     def _build_orders(
         self,
         signal: Signal,
-        yes_data: MarketData,
-        no_data: MarketData,
+        up_data: MarketData,
+        down_data: MarketData,
     ) -> list[OrderRequest]:
         """
         根据信号生成两笔订单：
@@ -236,28 +248,19 @@ class Btc5MinStrategy(BaseStrategy):
         订单类型使用 FOK（Fill-Or-Kill）：临近结算时要求立即成交，
         若无法立即全部成交则自动取消，避免挂单残留到结算后。
         """
-        if signal == Signal.BUY_YES:
-            main_token, main_outcome, main_data = yes_data.token_id, "YES", yes_data
-            hedge_token, hedge_outcome, hedge_data = no_data.token_id, "NO", no_data
-        else:  # BUY_NO
-            main_token, main_outcome, main_data = no_data.token_id, "NO", no_data
-            hedge_token, hedge_outcome, hedge_data = yes_data.token_id, "YES", yes_data
+        if signal == Signal.BUY_UP:
+            main_token, main_outcome, main_data = up_data.token_id,   "UP",   up_data
+            hedge_token, hedge_outcome, hedge_data = down_data.token_id, "DOWN", down_data
+        else:  # BUY_DOWN
+            main_token, main_outcome, main_data = down_data.token_id, "DOWN", down_data
+            hedge_token, hedge_outcome, hedge_data = up_data.token_id,   "UP",   up_data
 
-        main_price  = main_data.best_ask  or main_data.midpoint  or 0.5
-        hedge_price = hedge_data.best_ask or hedge_data.midpoint or 0.5
+        main_price  = main_data.best_ask  or 0.5
+        hedge_price = hedge_data.best_ask or 0.5
 
         main_size  = round(self._cfg.main_bet_usdc  / main_price,  2)
-        hedge_size = round(self._cfg.hedge_bet_usdc / hedge_price, 2)
 
-        logger.info(
-            "[%s] 构建订单 — 主仓: %s BUY %.2f股 @%.4f (≈$%.2f)  "
-            "对冲: %s BUY %.2f股 @%.4f (≈$%.2f)",
-            self.name,
-            main_outcome,  main_size,  main_price,  self._cfg.main_bet_usdc,
-            hedge_outcome, hedge_size, hedge_price, self._cfg.hedge_bet_usdc,
-        )
-
-        return [
+        orders = [
             OrderRequest(
                 token_id=main_token,
                 condition_id=main_data.condition_id,
@@ -268,7 +271,11 @@ class Btc5MinStrategy(BaseStrategy):
                 order_type="FOK",
                 strategy_tag=self.name,
             ),
-            OrderRequest(
+        ]
+
+        if self._cfg.hedge_bet_usdc > 0:
+            hedge_size = round(self._cfg.hedge_bet_usdc / hedge_price, 2)
+            orders.append(OrderRequest(
                 token_id=hedge_token,
                 condition_id=hedge_data.condition_id,
                 outcome=hedge_outcome,
@@ -277,5 +284,14 @@ class Btc5MinStrategy(BaseStrategy):
                 price=hedge_price,
                 order_type="FOK",
                 strategy_tag=f"{self.name}_hedge",
-            ),
-        ]
+            ))
+
+        logger.info(
+            "[%s] 构建订单 — 主仓: %s BUY %.2f股 @%.4f (≈$%.2f)%s",
+            self.name,
+            main_outcome, main_size, main_price, self._cfg.main_bet_usdc,
+            f"  对冲: {hedge_outcome} BUY @{hedge_price:.4f} (≈${self._cfg.hedge_bet_usdc:.2f})"
+            if self._cfg.hedge_bet_usdc > 0 else "  对冲: 已关闭",
+        )
+
+        return orders

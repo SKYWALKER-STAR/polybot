@@ -67,9 +67,9 @@ class PolymarketClient:
     # Market data  (read-only)
     # ------------------------------------------------------------------ #
 
-    async def get_market(self, condition_id: str) -> Any:
-        """Return the Market SDK model for the given condition ID."""
-        return await self.client.get_market(id=condition_id)
+    async def get_event(self, slug: str) -> Any:
+        """Return the Event SDK model for the given event slug."""
+        return await self.client.get_event(slug=slug)
 
     async def get_order_book(self, token_id: str) -> Any:
         """Return the order book SDK model for a token."""
@@ -88,28 +88,30 @@ class PolymarketClient:
         order_type: str = "GTC",
     ) -> dict[str, Any]:
         """
-        Sign and submit a limit order via the official SDK.
+        Sign and submit an order via the official SDK.
 
-        Parameters
-        ----------
-        token_id:   SDK token ID (YES or NO outcome token).
-        side:       "BUY" or "SELL".
-        size:       Number of shares.
-        price:      Limit price in [0, 1].
-        order_type: Currently only "GTC" is mapped; FOK/GTD reserved for
-                    future use via place_market_order / place_expiring_limit_order.
-
-        Returns
-        -------
-        Dict with keys: ``ok`` (bool), ``order_id`` (str | None),
-        ``code`` and ``message`` on rejection.
+        - GTC: place_limit_order — 按 price/size 下限价单
+        - FOK: place_market_order(order_type="FOK") — 以 size*price USDC 为花费额市价单，
+               无法全部成交则全部取消
         """
-        response = await self.client.place_limit_order(
-            token_id=token_id,
-            side=side,
-            price=str(price),
-            size=str(size),
-        )
+        if order_type in ("FOK", "FAK"):
+            # FOK/FAK 市价单：amount = 押注 USDC 金额
+            # FOK: 必须全部成交，否则全部取消
+            # FAK: 能成交多少成交多少，剩余取消（流动性不足时更适合）
+            amount = str(round(size * price, 6))
+            response = await self.client.place_market_order(
+                token_id=token_id,
+                side=side,
+                amount=amount,
+                order_type=order_type,
+            )
+        else:
+            response = await self.client.place_limit_order(
+                token_id=token_id,
+                side=side,
+                price=str(price),
+                size=str(size),
+            )
         return {
             "ok": response.ok,
             "order_id": response.order_id if response.ok else None,

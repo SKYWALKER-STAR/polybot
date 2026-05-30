@@ -31,17 +31,24 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ #
-    # Target market identifiers
+    # Target market — BTC 5-minute up/down
     # ------------------------------------------------------------------ #
-    # BTC 5-min up/down market on Polymarket
-    btc_5min_condition_id: str = Field(
-        description="Condition ID of the BTC 5-minute up/down market"
+    # 初始市场的 slug Unix 时间戳，例如 btc-updown-5m-1780073700 中的 1780073700。
+    # MarketResolver 会从此时间戳出发，自动跟踪后续每个 5-min 市场。
+    btc_5min_start_timestamp: int = Field(
+        description="Initial Unix timestamp for the BTC 5-min market slug (e.g. 1780073700)"
     )
-    btc_5min_yes_token_id: str = Field(
-        description="CLOB token ID for the YES outcome"
+
+    # ------------------------------------------------------------------ #
+    # Polymarket CLOB endpoint
+    # ------------------------------------------------------------------ #
+    clob_host: str = Field(
+        default="https://clob.polymarket.com",
+        description="Polymarket CLOB API base URL",
     )
-    btc_5min_no_token_id: str = Field(
-        description="CLOB token ID for the NO outcome"
+    chain_id: int = Field(
+        default=137,
+        description="EVM chain ID (137 = Polygon mainnet)",
     )
 
     # ------------------------------------------------------------------ #
@@ -66,6 +73,21 @@ class Settings(BaseSettings):
 
     # Maximum total open exposure per market side (YES / NO).
     max_position_size_usdc: float = Field(default=200.0, gt=0)
+
+    # ------------------------------------------------------------------ #
+    # Strategy — BTC 5-min
+    # ------------------------------------------------------------------ #
+    # 主方向押注金额（USDC）
+    strategy_main_bet_usdc: float = Field(default=5.0, gt=0)
+
+    # 对冲方向押注金额（USDC）
+    strategy_hedge_bet_usdc: float = Field(default=1.0, ge=0)
+
+    # 距结算多少秒内开始入场检查
+    strategy_entry_seconds: int = Field(default=60, ge=5)
+
+    # 触发入场的概率阈值（0~1），例如 0.90 = 90%
+    strategy_min_probability: float = Field(default=0.90, gt=0, le=1)
 
     # ------------------------------------------------------------------ #
     # Logging

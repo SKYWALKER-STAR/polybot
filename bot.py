@@ -26,6 +26,7 @@ from pathlib import Path
 from config.settings import settings
 from core.client import PolymarketClient
 from core.market_data import MarketDataService
+from core.market_resolver import MarketResolver
 from core.order_manager import OrderManager
 from audit.logger import AuditLogger
 from database.connection import init_db
@@ -90,11 +91,12 @@ class PolybBot:
         await self._client.connect()
 
         # --- component wiring ---------------------------------------
+        resolver = MarketResolver(
+            initial_timestamp=settings.btc_5min_start_timestamp,
+        )
         self._market_data = MarketDataService(
             client=self._client,
-            condition_id=settings.btc_5min_condition_id,
-            yes_token_id=settings.btc_5min_yes_token_id,
-            no_token_id=settings.btc_5min_no_token_id,
+            resolver=resolver,
         )
         self._order_manager = OrderManager(
             client=self._client,
@@ -147,7 +149,7 @@ class PolybBot:
     async def _tick(self) -> None:
         # 1. Fetch market data
         try:
-            yes_data, no_data = await self._market_data.fetch()
+            up_data, down_data = await self._market_data.fetch()
         except Exception as exc:
             logger.error("Market data fetch failed: %s", exc)
             self._audit.record(
@@ -161,15 +163,18 @@ class PolybBot:
             action=AuditAction.MARKET_DATA_FETCH,
             result=AuditResult.SUCCESS,
             details={
-                "yes_mid": yes_data.midpoint,
-                "no_mid": no_data.midpoint,
-                "yes_spread": yes_data.spread,
+                "up_buy_price":    up_data.best_ask,    # 买入 UP 时支付的价格（最低 ask）
+                "up_sell_price":   up_data.best_bid,    # 卖出 UP 时收到的价格（最高 bid）
+                "up_spread":       up_data.spread,
+                "down_buy_price":  down_data.best_ask,  # 买入 DOWN 时支付的价格（最低 ask）
+                "down_sell_price": down_data.best_bid,  # 卖出 DOWN 时收到的价格（最高 bid）
+                "down_spread":     down_data.spread,
             },
         )
 
         # 2. Run strategy
         try:
-            order_requests = self._strategy.on_tick(yes_data, no_data)
+            order_requests = self._strategy.on_tick(up_data, down_data)
         except Exception as exc:
             logger.exception("Strategy raised an exception: %s", exc)
             self._audit.error(str(exc), details={"context": "strategy.on_tick"})
@@ -213,10 +218,10 @@ def _build_strategy() -> BaseStrategy:
       - min_probability_threshold       触发阈值（0~1）
     """
     config = StrategyConfig(
-        main_bet_usdc=5.0,
-        hedge_bet_usdc=1.0,
-        entry_seconds_before_settlement=60,
-        min_probability_threshold=0.90,
+        main_bet_usdc=settings.strategy_main_bet_usdc,
+        hedge_bet_usdc=settings.strategy_hedge_bet_usdc,
+        entry_seconds_before_settlement=settings.strategy_entry_seconds,
+        min_probability_threshold=settings.strategy_min_probability,
     )
     return Btc5MinStrategy(config=config)
 
