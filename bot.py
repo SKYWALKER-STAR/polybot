@@ -102,6 +102,7 @@ class PolybBot:
             client=self._client,
             audit_logger=self._audit,
         )
+        self._last_condition_id: str = ""  # 用于检测市场切换
 
         # --- signal handlers ----------------------------------------
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -159,6 +160,22 @@ class PolybBot:
             )
             return
 
+        # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
+        current_condition_id = up_data.condition_id
+        if self._last_condition_id and self._last_condition_id != current_condition_id:
+            logger.info(
+                "市场已切换 %s → %s，开始撤销旧市场残留挂单 …",
+                self._last_condition_id, current_condition_id,
+            )
+            try:
+                cancelled = await self._order_manager.cancel_orders_for_condition(
+                    self._last_condition_id
+                )
+                logger.info("旧市场挂单已撤销 %d 笔", cancelled)
+            except Exception as exc:
+                logger.warning("撤销旧市场挂单时出错: %s", exc)
+        self._last_condition_id = current_condition_id
+
         self._audit.record(
             action=AuditAction.MARKET_DATA_FETCH,
             result=AuditResult.SUCCESS,
@@ -212,16 +229,21 @@ def _build_strategy() -> BaseStrategy:
     实例化并配置当前使用的交易策略。
 
     修改押注金额或触发条件请在此处调整 StrategyConfig 参数：
-      - main_bet_usdc                  主方向押注金额（USDC）
+      - fok_bet_usdc                   FOK 市价单押注金额（USDC）
+      - gtc_bet_usdc                   GTC 限价单押注金额（USDC）
       - hedge_bet_usdc                 对冲方向押注金额（USDC）
       - entry_seconds_before_settlement 距结算多少秒内入场
-      - min_probability_threshold       触发阈值（0~1）
+      - target_price                    目标价格（0~1）
+      - price_tolerance                 价格容忍带（0~1，如 0.03 = ±3%）
     """
     config = StrategyConfig(
-        main_bet_usdc=settings.strategy_main_bet_usdc,
+        fok_bet_usdc=settings.strategy_fok_bet_usdc,
+        gtc_bet_usdc=settings.strategy_gtc_bet_usdc,
         hedge_bet_usdc=settings.strategy_hedge_bet_usdc,
         entry_seconds_before_settlement=settings.strategy_entry_seconds,
-        min_probability_threshold=settings.strategy_min_probability,
+        target_price=settings.strategy_target_price,
+        price_tolerance=settings.strategy_price_tolerance,
+        limit_price_offset=settings.strategy_limit_price_offset,
     )
     return Btc5MinStrategy(config=config)
 

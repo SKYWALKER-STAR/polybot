@@ -243,6 +243,55 @@ class OrderManager:
             )
             return False
 
+    async def cancel_orders_for_condition(self, condition_id: str) -> int:
+        """
+        撤销指定 condition_id 下所有状态为 OPEN/PARTIAL/PENDING 的挂单。
+        返回成功撤销的数量。
+        """
+        open_statuses = {OrderStatus.OPEN, OrderStatus.PARTIAL, OrderStatus.PENDING}
+        with get_session() as session:
+            orders = session.query(Order).filter(
+                Order.condition_id == condition_id,
+                Order.status.in_(open_statuses),
+                Order.is_dry_run == False,  # noqa: E712
+            ).all()
+            order_infos = [
+                {"id": o.id, "polymarket_order_id": o.polymarket_order_id}
+                for o in orders
+            ]
+
+        if not order_infos:
+            return 0
+
+        logger.info(
+            "撤单 — condition_id=%s 有 %d 笔挂单待撤销",
+            condition_id, len(order_infos),
+        )
+
+        cancelled = 0
+        for info in order_infos:
+            local_id = info["id"]
+            exchange_id = info["polymarket_order_id"]
+            if not exchange_id:
+                # 没有交易所 ID，直接标记为已撤销
+                self._update_order_status(local_id, OrderStatus.CANCELLED)
+                cancelled += 1
+                continue
+            try:
+                await self._client.cancel_order(exchange_id)
+                self._update_order_status(local_id, OrderStatus.CANCELLED)
+                logger.info("已撤销 local_id=%s exchange_id=%s", local_id, exchange_id)
+                cancelled += 1
+            except Exception as exc:
+                logger.warning("撤销 local_id=%s 失败: %s", local_id, exc)
+
+        self._audit.record(
+            action=AuditAction.CANCEL_ALL,
+            result=AuditResult.SUCCESS,
+            details={"condition_id": condition_id, "cancelled": cancelled},
+        )
+        return cancelled
+
     async def cancel_all(self) -> bool:
         """Cancel all open orders on the exchange account."""
         if settings.dry_run:

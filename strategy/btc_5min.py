@@ -4,12 +4,12 @@ BTC 5分钟涨跌策略
 交易逻辑
 --------
 当距离本轮市场结算时间还剩 ``entry_seconds_before_settlement`` 秒（默认 60s）时：
-  - 若 UP（涨）的最优卖价 >= ``min_probability_threshold``（默认 0.90），则：
+  - 若 UP（涨）的 best_ask 落在 [target_price - tolerance, target_price + tolerance] 范围内，则：
       · 买入 ``main_bet_usdc`` 美元的 UP（主仓）
-      · 买入 ``hedge_bet_usdc`` 美元的 DOWN（对冲仓）
-  - 若 DOWN（跌）的最优卖价 >= ``min_probability_threshold``，则：
+      · 买入 ``hedge_bet_usdc`` 美元的 DOWN（对冲仓，可设为 0 关闭）
+  - 若 DOWN（跌）的 best_ask 落在该范围内，则：
       · 买入 ``main_bet_usdc`` 美元的 DOWN（主仓）
-      · 买入 ``hedge_bet_usdc`` 美元的 UP（对冲仓）
+      · 买入 ``hedge_bet_usdc`` 美元的 UP（对冲仓，可设为 0 关闭）
   - 每轮结算周期只入场一次，防止重复下单。
 
 修改押注金额
@@ -47,18 +47,32 @@ class StrategyConfig:
     """
 
     # ---- 资金配置（主要修改入口）-------------------------------------
-    # 主方向押注金额（USDC）
-    main_bet_usdc: float = 5.0
+    # FOK 市价单押注金额（USDC）—— 立即吃单，保证即时成交。设为 0 可关闭
+    fok_bet_usdc: float = 1.0
+
+    # GTC 限价单押注金额（USDC）—— 挂单等待更优价格成交。设为 0 可关闭
+    gtc_bet_usdc: float = 1.0
 
     # 对冲方向押注金额（USDC）
-    hedge_bet_usdc: float = 1.0
+    hedge_bet_usdc: float = 0.0
 
     # ---- 入场触发条件 -----------------------------------------------
     # 距离结算还剩多少秒内开始检查并入场
     entry_seconds_before_settlement: int = 60
 
-    # 某一结果的最优卖价（概率）达到此阈值时触发入场
-    min_probability_threshold: float = 0.90
+    # 目标入场价格（0~1），例如 0.80 = 80%
+    # 当某方向的 best_ask 落在 [target_price - tolerance, target_price + tolerance] 时触发
+    target_price: float = 0.80
+
+    # 价格容忍带（0~1），例如 0.03 = ±3%
+    price_tolerance: float = 0.03
+
+    # ---- 限价单价格偏移 ---------------------------------------------
+    # 实际下单价格 = best_ask - limit_price_offset
+    # 0.0  → 直接以 best_ask 挂单（贴近市价）
+    # 0.01 → 比当前最优卖价低 1 分，更省钱但可能不成交
+    # 负值 → 比 best_ask 更高，确保优先成交（不建议）
+    limit_price_offset: float = 0.0
 
 
 # ------------------------------------------------------------------ #
@@ -100,12 +114,14 @@ class Btc5MinStrategy(BaseStrategy):
 
     def on_start(self) -> None:
         logger.info(
-            "[%s] 策略启动 — 主押 %.2f USDC，对冲 %.2f USDC，"
-            "触发阈值 %.0f%%，入场窗口 %ds",
+            "[%s] 策略启动 — FOK %.2f USDC + GTC %.2f USDC，对冲 %.2f USDC，"
+            "目标价格 %.2f ±%.0f%%，入场窗口 %ds",
             self.name,
-            self._cfg.main_bet_usdc,
+            self._cfg.fok_bet_usdc,
+            self._cfg.gtc_bet_usdc,
             self._cfg.hedge_bet_usdc,
-            self._cfg.min_probability_threshold * 100,
+            self._cfg.target_price,
+            self._cfg.price_tolerance * 100,
             self._cfg.entry_seconds_before_settlement,
         )
 
@@ -208,25 +224,27 @@ class Btc5MinStrategy(BaseStrategy):
             )
             return Signal.NONE
 
+        lo = self._cfg.target_price - self._cfg.price_tolerance
+        hi = self._cfg.target_price + self._cfg.price_tolerance
+
         logger.info(
-            "[%s] ★ 入场窗口 ★ 距结算 %.0fs  UP=%.4f  DOWN=%.4f  阈值=%.2f",
-            self.name, seconds_remaining, up_price, down_price,
-            self._cfg.min_probability_threshold,
+            "[%s] ★ 入场窗口 ★ 距结算 %.0fs  UP=%.4f  DOWN=%.4f  目标区间=[%.2f, %.2f]",
+            self.name, seconds_remaining, up_price, down_price, lo, hi,
         )
 
-        if up_price >= self._cfg.min_probability_threshold:
-            logger.info("[%s] 信号: UP 概率 %.4f >= %.2f → 主押 UP，对冲 DOWN",
-                        self.name, up_price, self._cfg.min_probability_threshold)
+        if lo <= up_price <= hi:
+            logger.info("[%s] 信号: UP 价格 %.4f 在 [%.2f, %.2f] → 主押 UP",
+                        self.name, up_price, lo, hi)
             return Signal.BUY_UP
 
-        if down_price >= self._cfg.min_probability_threshold:
-            logger.info("[%s] 信号: DOWN 概率 %.4f >= %.2f → 主押 DOWN，对冲 UP",
-                        self.name, down_price, self._cfg.min_probability_threshold)
+        if lo <= down_price <= hi:
+            logger.info("[%s] 信号: DOWN 价格 %.4f 在 [%.2f, %.2f] → 主押 DOWN",
+                        self.name, down_price, lo, hi)
             return Signal.BUY_DOWN
 
         logger.info(
-            "[%s] 两侧概率均未达阈值（UP=%.4f, DOWN=%.4f），不入场。",
-            self.name, up_price, down_price,
+            "[%s] 两侧价格均不在目标区间（UP=%.4f, DOWN=%.4f, 区间=[%.2f, %.2f]），不入场。",
+            self.name, up_price, down_price, lo, hi,
         )
         return Signal.NONE
 
@@ -255,23 +273,40 @@ class Btc5MinStrategy(BaseStrategy):
             main_token, main_outcome, main_data = down_data.token_id, "DOWN", down_data
             hedge_token, hedge_outcome, hedge_data = up_data.token_id,   "UP",   up_data
 
-        main_price  = main_data.best_ask  or 0.5
-        hedge_price = hedge_data.best_ask or 0.5
+        # 限价单价格 = best_ask - offset，限制在 [0.01, 0.99]
+        raw_main_ask  = main_data.best_ask  or 0.5
+        raw_hedge_ask = hedge_data.best_ask or 0.5
+        fok_price  = round(max(0.01, min(0.99, raw_main_ask)), 4)
+        gtc_price  = round(max(0.01, min(0.99, raw_main_ask - self._cfg.limit_price_offset)), 4)
+        hedge_price = round(max(0.01, min(0.99, raw_hedge_ask - self._cfg.limit_price_offset)), 4)
 
-        main_size  = round(self._cfg.main_bet_usdc  / main_price,  2)
+        orders: list[OrderRequest] = []
 
-        orders = [
-            OrderRequest(
+        if self._cfg.fok_bet_usdc > 0:
+            fok_size = round(self._cfg.fok_bet_usdc / fok_price, 2)
+            orders.append(OrderRequest(
                 token_id=main_token,
                 condition_id=main_data.condition_id,
                 outcome=main_outcome,
                 side="BUY",
-                size=main_size,
-                price=main_price,
+                size=fok_size,
+                price=fok_price,
                 order_type="FOK",
                 strategy_tag=self.name,
-            ),
-        ]
+            ))
+
+        if self._cfg.gtc_bet_usdc > 0:
+            gtc_size = round(self._cfg.gtc_bet_usdc / gtc_price, 2)
+            orders.append(OrderRequest(
+                token_id=main_token,
+                condition_id=main_data.condition_id,
+                outcome=main_outcome,
+                side="BUY",
+                size=gtc_size,
+                price=gtc_price,
+                order_type="GTC",
+                strategy_tag=f"{self.name}_gtc",
+            ))
 
         if self._cfg.hedge_bet_usdc > 0:
             hedge_size = round(self._cfg.hedge_bet_usdc / hedge_price, 2)
@@ -282,15 +317,17 @@ class Btc5MinStrategy(BaseStrategy):
                 side="BUY",
                 size=hedge_size,
                 price=hedge_price,
-                order_type="FOK",
+                order_type="GTC",
                 strategy_tag=f"{self.name}_hedge",
             ))
 
         logger.info(
-            "[%s] 构建订单 — 主仓: %s BUY %.2f股 @%.4f (≈$%.2f)%s",
+            "[%s] 构建订单 — 主仓 %s: FOK %.2f USDC @%.4f + GTC %.2f USDC @%.4f%s",
             self.name,
-            main_outcome, main_size, main_price, self._cfg.main_bet_usdc,
-            f"  对冲: {hedge_outcome} BUY @{hedge_price:.4f} (≈${self._cfg.hedge_bet_usdc:.2f})"
+            main_outcome,
+            self._cfg.fok_bet_usdc, fok_price,
+            self._cfg.gtc_bet_usdc, gtc_price,
+            f"  对冲: {hedge_outcome} GTC @{hedge_price:.4f} (≈${self._cfg.hedge_bet_usdc:.2f})"
             if self._cfg.hedge_bet_usdc > 0 else "  对冲: 已关闭",
         )
 

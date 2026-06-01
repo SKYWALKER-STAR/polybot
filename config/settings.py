@@ -77,8 +77,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Strategy — BTC 5-min
     # ------------------------------------------------------------------ #
-    # 主方向押注金额（USDC）
-    strategy_main_bet_usdc: float = Field(default=5.0, gt=0)
+    # FOK 市价单押注金额（USDC）
+    strategy_fok_bet_usdc: float = Field(default=1.0, ge=0)
+
+    # GTC 限价单押注金额（USDC）
+    strategy_gtc_bet_usdc: float = Field(default=1.0, ge=0)
 
     # 对冲方向押注金额（USDC）
     strategy_hedge_bet_usdc: float = Field(default=1.0, ge=0)
@@ -86,8 +89,14 @@ class Settings(BaseSettings):
     # 距结算多少秒内开始入场检查
     strategy_entry_seconds: int = Field(default=60, ge=5)
 
-    # 触发入场的概率阈值（0~1），例如 0.90 = 90%
-    strategy_min_probability: float = Field(default=0.90, gt=0, le=1)
+    # 目标入场价格（0~1），best_ask 落在此价格 ±tolerance 内时触发
+    strategy_target_price: float = Field(default=0.80, gt=0, lt=1)
+
+    # 价格容忍带（0~1），例如 0.03 = ±3%
+    strategy_price_tolerance: float = Field(default=0.03, gt=0, lt=1)
+
+    # 限价单偏移：实际下单价 = best_ask - offset（0.0 = 直接贴 best_ask 挂单）
+    strategy_limit_price_offset: float = Field(default=0.0, ge=0, lt=1)
 
     # ------------------------------------------------------------------ #
     # Logging
