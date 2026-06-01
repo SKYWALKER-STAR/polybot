@@ -91,8 +91,8 @@ class Signal(str, Enum):
 
 @dataclass
 class _StrategyState:
-    # 上次下单时的市场结算时间（用于避免同一周期重复入场）
-    last_bet_settlement: Optional[datetime] = None
+    # 上次下单时的市场 condition_id（用于避免同一周期重复入场）
+    bet_condition_id: Optional[str] = None
 
 
 # ------------------------------------------------------------------ #
@@ -137,7 +137,7 @@ class Btc5MinStrategy(BaseStrategy):
         orders = self._build_orders(signal, up_data, down_data)
         if orders:
             # 标记本轮结算周期已入场，避免重复下单
-            self._state.last_bet_settlement = up_data.market_end_time
+            self._state.bet_condition_id = up_data.condition_id
 
         return orders
 
@@ -184,11 +184,8 @@ class Btc5MinStrategy(BaseStrategy):
         now = datetime.now(timezone.utc)
         seconds_remaining = (end_time - now).total_seconds()
 
-        # 结算已过，重置本周期状态以便下一轮可以入场
+        # 结算已过，等待新一轮市场开启
         if seconds_remaining <= 0:
-            if self._state.last_bet_settlement == end_time:
-                logger.debug("[%s] 结算时间已过，等待新一轮市场开启。", self.name)
-            self._state.last_bet_settlement = None
             return Signal.NONE
 
         # 未进入入场窗口
@@ -199,8 +196,8 @@ class Btc5MinStrategy(BaseStrategy):
             )
             return Signal.NONE
 
-        # 本周期已经入场过
-        if self._state.last_bet_settlement == end_time:
+        # 本周期已经入场过（以 condition_id 为去重键，字符串比较更可靠）
+        if self._state.bet_condition_id == up_data.condition_id:
             logger.debug("[%s] 本周期已入场，不重复下单。", self.name)
             return Signal.NONE
 
