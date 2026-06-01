@@ -66,7 +66,8 @@ class Settings(BaseSettings):
     dry_run: bool = Field(default=True)
 
     # How often (in seconds) the main loop wakes up and polls market data.
-    poll_interval_seconds: int = Field(default=30, ge=5)
+    # With WebSocket feed active, market data is read from memory — 1s is safe.
+    poll_interval_seconds: float = Field(default=1.0, ge=0.1)
 
     # Hard ceiling on a single order's USDC notional value.
     max_order_size_usdc: float = Field(default=50.0, gt=0)
