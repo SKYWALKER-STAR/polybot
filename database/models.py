@@ -61,6 +61,7 @@ class OrderStatus(str, enum.Enum):
 class OrderType(str, enum.Enum):
     GTC = "GTC"   # Good-Till-Cancelled  (default)
     FOK = "FOK"   # Fill-Or-Kill
+    FAK = "FAK"   # Fill-And-Kill
     GTD = "GTD"   # Good-Till-Date
 
 
