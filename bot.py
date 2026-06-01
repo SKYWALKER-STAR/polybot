@@ -45,7 +45,10 @@ def _setup_logging() -> None:
     fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
     level = logging.getLevelName(settings.log_level.upper())
 
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = []
+
+    if settings.log_console:
+        handlers.append(logging.StreamHandler(sys.stdout))
 
     file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(fmt))

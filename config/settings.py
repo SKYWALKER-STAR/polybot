@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     log_level: str = Field(default="INFO")
     log_file: str = Field(default="logs/polybot.log")
+    log_console: bool = Field(default=True)   # 是否将日志输出到终端
 
     @field_validator("private_key")
     @classmethod

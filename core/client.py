@@ -90,27 +90,26 @@ class PolymarketClient:
         """
         Sign and submit an order via the official SDK.
 
-        - GTC: place_limit_order — 按 price/size 下限价单
-        - FOK: place_market_order(order_type="FOK") — 以 size*price USDC 为花费额市价单，
-               无法全部成交则全部取消
+        ``size`` is always a **USDC amount**.
+
+        - FOK: place_market_order(amount=size) — SDK resolves best price internally
+        - GTC: place_limit_order(size=shares, price=price)
+               shares = round(size / price, 2)
         """
         if order_type in ("FOK", "FAK"):
-            # FOK/FAK 市价单：amount = 押注 USDC 金额
-            # FOK: 必须全部成交，否则全部取消
-            # FAK: 能成交多少成交多少，剩余取消（流动性不足时更适合）
-            amount = str(round(size * price, 6))
             response = await self.client.place_market_order(
                 token_id=token_id,
                 side=side,
-                amount=amount,
+                amount=str(round(size, 6)),
                 order_type=order_type,
             )
         else:
+            shares = round(size / price, 2)
             response = await self.client.place_limit_order(
                 token_id=token_id,
                 side=side,
                 price=str(price),
-                size=str(size),
+                size=str(shares),
             )
         return {
             "ok": response.ok,

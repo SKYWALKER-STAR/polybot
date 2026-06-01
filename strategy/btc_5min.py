@@ -280,39 +280,36 @@ class Btc5MinStrategy(BaseStrategy):
         orders: list[OrderRequest] = []
 
         if self._cfg.fok_bet_usdc > 0:
-            fok_size = round(self._cfg.fok_bet_usdc / fok_price, 2)
             orders.append(OrderRequest(
                 token_id=main_token,
                 condition_id=main_data.condition_id,
                 outcome=main_outcome,
                 side="BUY",
-                size=fok_size,
+                size=self._cfg.fok_bet_usdc,
                 price=fok_price,
                 order_type="FOK",
                 strategy_tag=self.name,
             ))
 
         if self._cfg.gtc_bet_usdc > 0:
-            gtc_size = round(self._cfg.gtc_bet_usdc / gtc_price, 2)
             orders.append(OrderRequest(
                 token_id=main_token,
                 condition_id=main_data.condition_id,
                 outcome=main_outcome,
                 side="BUY",
-                size=gtc_size,
+                size=self._cfg.gtc_bet_usdc,
                 price=gtc_price,
                 order_type="GTC",
                 strategy_tag=f"{self.name}_gtc",
             ))
 
         if self._cfg.hedge_bet_usdc > 0:
-            hedge_size = round(self._cfg.hedge_bet_usdc / hedge_price, 2)
             orders.append(OrderRequest(
                 token_id=hedge_token,
                 condition_id=hedge_data.condition_id,
                 outcome=hedge_outcome,
                 side="BUY",
-                size=hedge_size,
+                size=self._cfg.hedge_bet_usdc,
                 price=hedge_price,
                 order_type="GTC",
                 strategy_tag=f"{self.name}_hedge",
