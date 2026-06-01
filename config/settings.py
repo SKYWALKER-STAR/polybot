@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # 限价单偏移：实际下单价 = best_ask - offset（0.0 = 直接贴 best_ask 挂单）
     strategy_limit_price_offset: float = Field(default=0.0, ge=0, lt=1)
 
+    # 止损阈值（%，正数）：持仓亏损达到此百分比时立即平仓。
+    # 例如 20.0 = 亏损 20% 时触发止损。设为 0 可关闭止损。
+    strategy_stop_loss_pct: float = Field(default=0.0, ge=0, lt=100)
+
     # ------------------------------------------------------------------ #
     # Logging
     # ------------------------------------------------------------------ #

@@ -28,6 +28,7 @@ from core.client import PolymarketClient
 from core.market_data import MarketDataService
 from core.market_resolver import MarketResolver
 from core.order_manager import OrderManager
+from core.position_tracker import PositionTracker
 from core.ws_market_feed import WsMarketFeed
 from audit.logger import AuditLogger
 from database.connection import init_db
@@ -127,6 +128,7 @@ class PolybBot:
             client=self._client,
             audit_logger=self._audit,
         )
+        self._position_tracker = PositionTracker()
         self._last_condition_id: str = ""  # 用于检测市场切换
 
         # --- signal handlers ----------------------------------------
@@ -207,6 +209,8 @@ class PolybBot:
                 logger.info("旧市场挂单已撤销 %d 笔", cancelled)
             except Exception as exc:
                 logger.warning("撤销旧市场挂单时出错: %s", exc)
+            # 市场切换时清空持仓记录（旧市场结算，持仓已关闭）
+            self._position_tracker.clear_all()
         self._last_condition_id = current_condition_id
 
         self._audit.record(
@@ -222,7 +226,11 @@ class PolybBot:
             },
         )
 
-        # 2. Run strategy
+        # 2. 止损检查（在策略信号之前，优先清除局面)
+        if settings.strategy_stop_loss_pct > 0:
+            await self._check_stop_loss(up_data, down_data)
+
+        # 3. Run strategy
         try:
             order_requests = self._strategy.on_tick(up_data, down_data)
         except Exception as exc:
@@ -239,10 +247,83 @@ class PolybBot:
         # 3. Execute orders
         for req in order_requests:
             result = await self._order_manager.place_order(req)
+            # 成功提交的买入订单，记录到持仓跟踪器中
+            if result.success and req.side == "BUY":
+                self._position_tracker.record_fill(
+                    token_id=req.token_id,
+                    outcome=req.outcome,
+                    condition_id=req.condition_id,
+                    market_slug=req.market_slug,
+                    price=req.price,
+                    size_usdc=req.size,
+                )
             try:
                 self._strategy.on_order_result(req, result)
             except Exception as exc:
                 logger.exception("Strategy.on_order_result raised: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # Stop-loss
+    # ------------------------------------------------------------------ #
+
+    async def _check_stop_loss(
+        self,
+        up_data: "MarketData",   # noqa: F821
+        down_data: "MarketData",  # noqa: F821
+    ) -> None:
+        """
+        Check every tracked open position for a stop-loss trigger.
+
+        Uses WebSocket ``best_bid`` from the already-fetched ``MarketData``
+        snapshot — this is the fastest available price (in-memory, sub-ms).
+        The bid price represents what we would receive if we sold immediately.
+        """
+        token_bid_map: dict[str, float | None] = {
+            up_data.token_id:   up_data.best_bid,
+            down_data.token_id: down_data.best_bid,
+        }
+
+        to_liquidate = self._position_tracker.get_positions_to_liquidate(
+            token_bid_map=token_bid_map,
+            stop_loss_pct=settings.strategy_stop_loss_pct,
+        )
+
+        for pos, current_bid in to_liquidate:
+            logger.warning(
+                "[StopLoss] 平仓 %s %s — P&L=%.2f%%  平仓单价=%.4f  持股=%.4f",
+                pos.outcome, pos.token_id[:8],
+                pos.pnl_pct(current_bid), current_bid, pos.shares,
+            )
+            # 标记止损进行中，避免同一持仓在后续 tick 重复触发
+            self._position_tracker.mark_liquidating(pos.token_id)
+
+            liq_order = pos.liquidation_order(
+                current_bid=current_bid,
+                strategy_tag="stop_loss",
+            )
+            logger.info(
+                "[StopLoss] 下单平仓 — SELL GTC %s @%.4f  size=%.4f USDC",
+                pos.outcome, liq_order.price, liq_order.size,
+            )
+            try:
+                result = await self._order_manager.place_order(liq_order)
+                if result.success:
+                    logger.info(
+                        "[StopLoss] 平仓成功 — local_id=%s exchange_id=%s",
+                        result.local_order_id, result.exchange_order_id,
+                    )
+                    # 平仓成功后删除记录；若下单失败则保留记录以便下一 tick 重试
+                    self._position_tracker.close_position(pos.token_id)
+                else:
+                    logger.error(
+                        "[StopLoss] 平仓失败 — %s  将在下一个 tick 重试",
+                        result.error,
+                    )
+                    # 重置 liquidating 标志，允许下一个 tick 重试
+                    pos.liquidating = False
+            except Exception as exc:
+                logger.exception("[StopLoss] 平仓请求异常: %s", exc)
+                pos.liquidating = False
 
     # ------------------------------------------------------------------ #
     # Signal handler
