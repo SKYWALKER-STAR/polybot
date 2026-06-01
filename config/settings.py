@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     # FOK 市价单押注金额（USDC）
     strategy_fok_bet_usdc: float = Field(default=1.0, ge=0)
 
+    # FAK 市价单押注金额（USDC）—— 尽量成交，剩余部分取消
+    strategy_fak_bet_usdc: float = Field(default=0.0, ge=0)
+
     # GTC 限价单押注金额（USDC）
     strategy_gtc_bet_usdc: float = Field(default=1.0, ge=0)
 
@@ -98,7 +101,8 @@ class Settings(BaseSettings):
 
     # 限价单偏移：实际下单价 = best_ask - offset（0.0 = 直接贴 best_ask 挂单）
     strategy_limit_price_offset: float = Field(default=0.0, ge=0, lt=1)
-
+    # 止损单类型：GTC（挂单等待成交）/ FOK（全部成交或取消）/ FAK（尽量成交剩余取消）
+    strategy_stop_loss_order_type: str = Field(default="GTC")
     # 止损阈值（%，正数）：持仓亏损达到此百分比时立即平仓。
     # 例如 20.0 = 亏损 20% 时触发止损。设为 0 可关闭止损。
     strategy_stop_loss_pct: float = Field(default=0.0, ge=0, lt=100)

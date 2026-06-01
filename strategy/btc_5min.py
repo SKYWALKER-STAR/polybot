@@ -47,8 +47,11 @@ class StrategyConfig:
     """
 
     # ---- 资金配置（主要修改入口）-------------------------------------
-    # FOK 市价单押注金额（USDC）—— 立即吃单，保证即时成交。设为 0 可关闭
+    # FOK 市价单押注金额（USDC）—— 立即吃单，保证即时全部成交。设为 0 可关闭
     fok_bet_usdc: float = 1.0
+
+    # FAK 市价单押注金额（USDC）—— 尽量吃单，剩余部分自动取消。设为 0 可关闭
+    fak_bet_usdc: float = 0.0
 
     # GTC 限价单押注金额（USDC）—— 挂单等待更优价格成交。设为 0 可关闭
     gtc_bet_usdc: float = 1.0
@@ -114,10 +117,11 @@ class Btc5MinStrategy(BaseStrategy):
 
     def on_start(self) -> None:
         logger.info(
-            "[%s] 策略启动 — FOK %.2f USDC + GTC %.2f USDC，对冲 %.2f USDC，"
+            "[%s] 策略启动 — FOK %.2f USDC + FAK %.2f USDC + GTC %.2f USDC，对冲 %.2f USDC，"
             "目标价格 %.2f ±%.0f%%，入场窗口 %ds",
             self.name,
             self._cfg.fok_bet_usdc,
+            self._cfg.fak_bet_usdc,
             self._cfg.gtc_bet_usdc,
             self._cfg.hedge_bet_usdc,
             self._cfg.target_price,
@@ -291,6 +295,18 @@ class Btc5MinStrategy(BaseStrategy):
                 strategy_tag=self.name,
             ))
 
+        if self._cfg.fak_bet_usdc > 0:
+            orders.append(OrderRequest(
+                token_id=main_token,
+                condition_id=main_data.condition_id,
+                outcome=main_outcome,
+                side="BUY",
+                size=self._cfg.fak_bet_usdc,
+                price=fok_price,
+                order_type="FAK",
+                strategy_tag=f"{self.name}_fak",
+            ))
+
         if self._cfg.gtc_bet_usdc > 0:
             orders.append(OrderRequest(
                 token_id=main_token,
@@ -316,10 +332,11 @@ class Btc5MinStrategy(BaseStrategy):
             ))
 
         logger.info(
-            "[%s] 构建订单 — 主仓 %s: FOK %.2f USDC @%.4f + GTC %.2f USDC @%.4f%s",
+            "[%s] 构建订单 — 主仓 %s: FOK %.2f USDC @%.4f + FAK %.2f USDC @%.4f + GTC %.2f USDC @%.4f%s",
             self.name,
             main_outcome,
             self._cfg.fok_bet_usdc, fok_price,
+            self._cfg.fak_bet_usdc, fok_price,
             self._cfg.gtc_bet_usdc, gtc_price,
             f"  对冲: {hedge_outcome} GTC @{hedge_price:.4f} (≈${self._cfg.hedge_bet_usdc:.2f})"
             if self._cfg.hedge_bet_usdc > 0 else "  对冲: 已关闭",

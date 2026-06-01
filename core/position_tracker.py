@@ -89,19 +89,17 @@ class Position:
     def liquidation_order(
         self,
         current_bid: float,
+        order_type: str = "GTC",
         strategy_tag: str = "stop_loss",
     ) -> OrderRequest:
         """
         Build an ``OrderRequest`` that sells all shares at ``current_bid``.
 
-        The USDC *size* passed to ``OrderManager`` is computed so that
-        ``client.create_limit_order`` (GTC path) derives the correct share count:
-            shares = round(size_usdc / price, 2)
-            → size_usdc = shares * price
-        We use GTC so the order stays live on the book even if not filled
-        instantly (unlike FOK which would be cancelled if partial).
+        order_type:
+          - GTC : 挂限价卖单，价格不成交会留在订单簿上持续等待
+          - FOK : 必须立即全部成交，否则整单取消
+          - FAK : 尽量立即成交，剩余部分自动取消
         """
-        # USDC value of all shares at current bid price
         size_usdc = round(self.shares * current_bid, 6)
         price = round(max(0.01, min(0.99, current_bid)), 4)
 
@@ -112,7 +110,7 @@ class Position:
             side="SELL",
             size=size_usdc,
             price=price,
-            order_type="GTC",
+            order_type=order_type,
             strategy_tag=strategy_tag,
             market_slug=self.market_slug,
         )

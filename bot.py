@@ -299,6 +299,7 @@ class PolybBot:
 
             liq_order = pos.liquidation_order(
                 current_bid=current_bid,
+                order_type=settings.strategy_stop_loss_order_type,
                 strategy_tag="stop_loss",
             )
             logger.info(
@@ -352,6 +353,7 @@ def _build_strategy() -> BaseStrategy:
     """
     config = StrategyConfig(
         fok_bet_usdc=settings.strategy_fok_bet_usdc,
+        fak_bet_usdc=settings.strategy_fak_bet_usdc,
         gtc_bet_usdc=settings.strategy_gtc_bet_usdc,
         hedge_bet_usdc=settings.strategy_hedge_bet_usdc,
         entry_seconds_before_settlement=settings.strategy_entry_seconds,

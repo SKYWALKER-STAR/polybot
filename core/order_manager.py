@@ -85,28 +85,6 @@ class OrderManager:
         exchange.
         """
         # --- risk checks ------------------------------------------------
-        # FOK/FAK market orders require ≥5 shares on Polymarket.
-        # At worst price ~0.99 that means ~$5 USDC. Limit orders (GTC/GTD)
-        # have a much lower minimum (~$1) so we skip the check for those.
-        if req.order_type in ("FOK", "FAK"):
-            _MIN_USDC_MARKET = 5.0
-            if req.size < _MIN_USDC_MARKET:
-                msg = (
-                    f"Order skipped: {req.size:.2f} USDC is below the minimum "
-                    f"~{_MIN_USDC_MARKET} USDC for FOK/FAK market orders "
-                    f"(Polymarket requires \u22655 shares)."
-                )
-                logger.warning(msg)
-                self._audit.record(
-                    action=AuditAction.PLACE_ORDER,
-                    result=AuditResult.SKIPPED,
-                    details={"request": _req_to_dict(req)},
-                    error_message=msg,
-                )
-                return OrderResult(success=False, local_order_id=None,
-                                   exchange_order_id=None, is_dry_run=settings.dry_run,
-                                   error=msg)
-
         if req.size > settings.max_order_size_usdc:
             msg = (
                 f"Order rejected: {req.size:.2f} USDC exceeds "
