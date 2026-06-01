@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from core.client import PolymarketClient
 from core.market_resolver import MarketInfo, MarketResolver
+from core.ws_market_feed import WsMarketFeed
 from database.connection import get_session
 from database.models import MarketSnapshot
 
@@ -76,10 +77,12 @@ class MarketDataService:
         client: PolymarketClient,
         resolver: MarketResolver,
         persist_snapshots: bool = True,
+        ws_feed: Optional[WsMarketFeed] = None,
     ) -> None:
         self._client = client
         self._resolver = resolver
         self.persist_snapshots = persist_snapshots
+        self._ws_feed = ws_feed
         # 以下三个字段由 _sync_market() 在每次 fetch 前更新
         self.condition_id: str = ""
         self.up_token_id: str = ""
@@ -118,13 +121,22 @@ class MarketDataService:
         """
         Fetch the current order book for both UP and DOWN tokens.
 
+        If a ``WsMarketFeed`` is attached and has received data, use its
+        in-memory cache instead of making HTTP requests.
+
         Returns (up_data, down_data).
         """
         market_info = await self._sync_market()
         market_end_time = market_info.end_time
 
-        up_data   = await self._fetch_token(self.up_token_id,   "UP",   market_end_time)
-        down_data = await self._fetch_token(self.down_token_id, "DOWN", market_end_time)
+        # --- WebSocket fast path ---
+        if self._ws_feed is not None and self._ws_feed.is_ready():
+            up_data   = self._build_from_ws(self.up_token_id,   "UP",   market_end_time)
+            down_data = self._build_from_ws(self.down_token_id, "DOWN", market_end_time)
+        else:
+            # --- HTTP fallback (also used before WS feed is ready) ---
+            up_data   = await self._fetch_token(self.up_token_id,   "UP",   market_end_time)
+            down_data = await self._fetch_token(self.down_token_id, "DOWN", market_end_time)
 
         # 注入 Gamma API 提供的市场概率价格
         up_data.gamma_price   = market_info.up_price
@@ -156,6 +168,49 @@ class MarketDataService:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+
+    def _build_from_ws(
+        self,
+        token_id: str,
+        outcome: str,
+        market_end_time: Optional[datetime] = None,
+    ) -> MarketData:
+        """Build a MarketData snapshot from the WsMarketFeed in-memory state."""
+        assert self._ws_feed is not None
+        state = self._ws_feed.get_snapshot(token_id)
+
+        best_bid: Optional[float] = None
+        best_ask: Optional[float] = None
+        last_trade_price: Optional[float] = None
+
+        if state is not None:
+            best_bid         = state.best_bid
+            best_ask         = state.best_ask
+            last_trade_price = state.last_trade_price
+
+        midpoint: Optional[float] = None
+        if best_bid is not None and best_ask is not None:
+            midpoint = (best_bid + best_ask) / 2
+        elif best_bid is not None:
+            midpoint = best_bid
+        elif best_ask is not None:
+            midpoint = best_ask
+
+        spread: Optional[float] = None
+        if best_bid is not None and best_ask is not None:
+            spread = best_ask - best_bid
+
+        return MarketData(
+            condition_id=self.condition_id,
+            token_id=token_id,
+            outcome=outcome,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            spread=spread,
+            midpoint=midpoint,
+            last_trade_price=last_trade_price,
+            market_end_time=market_end_time,
+        )
 
     async def _fetch_token(
         self,

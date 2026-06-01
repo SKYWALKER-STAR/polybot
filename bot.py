@@ -28,6 +28,7 @@ from core.client import PolymarketClient
 from core.market_data import MarketDataService
 from core.market_resolver import MarketResolver
 from core.order_manager import OrderManager
+from core.ws_market_feed import WsMarketFeed
 from audit.logger import AuditLogger
 from database.connection import init_db
 from database.models import AuditAction, AuditResult
@@ -94,9 +95,30 @@ class PolybBot:
         resolver = MarketResolver(
             initial_timestamp=settings.btc_5min_start_timestamp,
         )
+
+        # --- WebSocket market feed (runs as background task) --------
+        # Resolve token IDs once so we can subscribe before the first tick.
+        initial_market = await resolver.get_active_market()
+        self._ws_feed = WsMarketFeed()
+        self._ws_task = asyncio.create_task(
+            self._ws_feed.run(initial_market.up_token_id, initial_market.down_token_id),
+            name="ws_market_feed",
+        )
+        logger.info(
+            "WebSocket feed started — waiting for initial orderbook (up to 30s) …"
+        )
+        ready = await self._ws_feed.wait_ready(timeout=30.0)
+        if ready:
+            logger.info("WebSocket feed is ready — using live data.")
+        else:
+            logger.warning(
+                "WebSocket feed not ready after 30s — will fall back to HTTP polling."
+            )
+
         self._market_data = MarketDataService(
             client=self._client,
             resolver=resolver,
+            ws_feed=self._ws_feed,
         )
         self._order_manager = OrderManager(
             client=self._client,
@@ -136,6 +158,14 @@ class PolybBot:
             self._audit.bot_stop(
                 details={"stopped_at": datetime.now(timezone.utc).isoformat()}
             )
+            # Cancel WS background task
+            if hasattr(self, "_ws_task") and not self._ws_task.done():
+                self._ws_feed.stop()
+                self._ws_task.cancel()
+                try:
+                    await self._ws_task
+                except asyncio.CancelledError:
+                    pass
             await self._client.close()
             logger.info("=== Polybot stopped ===")
 
