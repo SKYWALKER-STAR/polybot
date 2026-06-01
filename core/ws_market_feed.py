@@ -75,6 +75,7 @@ class WsMarketFeed:
         self._token_ids: list[str] = []
         self._ready = asyncio.Event()   # set once the first book snapshot is received
         self._stop  = asyncio.Event()
+        self._ws: Any = None            # current live websocket connection
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -108,6 +109,43 @@ class WsMarketFeed:
             return None, None
         return state.best_bid, state.best_ask
 
+    async def subscribe_tokens(self, *token_ids: str) -> None:
+        """
+        Dynamically subscribe to additional token IDs without reconnecting.
+        New ``_TokenState`` entries are created immediately so ``is_ready()``
+        will temporarily return False for these tokens until a book snapshot
+        arrives.
+        """
+        new_ids = [tid for tid in token_ids if tid not in self._states]
+        if not new_ids:
+            return
+
+        for tid in new_ids:
+            self._states[tid] = _TokenState(token_id=tid)
+            self._token_ids.append(tid)
+
+        # Clear ready flag — caller should wait_ready() again
+        self._ready.clear()
+
+        if self._ws is not None:
+            try:
+                sub_msg = json.dumps({
+                    "assets_ids": new_ids,
+                    "operation": "subscribe",
+                    "custom_feature_enabled": True,
+                })
+                await self._ws.send(sub_msg)
+                logger.info(
+                    "[WsFeed] Dynamically subscribed to %d new token(s): %s",
+                    len(new_ids), [t[:8] for t in new_ids],
+                )
+            except Exception as exc:
+                logger.warning("[WsFeed] Failed to send dynamic subscribe: %s", exc)
+        else:
+            logger.info(
+                "[WsFeed] Queued %d token(s) for next connection.", len(new_ids)
+            )
+
     # ------------------------------------------------------------------ #
     # Background task
     # ------------------------------------------------------------------ #
@@ -140,6 +178,7 @@ class WsMarketFeed:
     async def _connect_and_run(self) -> None:
         logger.info("[WsFeed] Connecting to %s …", _WS_URL)
         async with websockets.connect(_WS_URL, ping_interval=None) as ws:
+            self._ws = ws
             logger.info("[WsFeed] Connected.")
 
             # Subscribe immediately (server may close idle connections)
@@ -151,11 +190,14 @@ class WsMarketFeed:
             await ws.send(sub_msg)
             logger.info("[WsFeed] Subscribed to %d token(s).", len(self._token_ids))
 
-            # Run heartbeat + message receiver concurrently
-            await asyncio.gather(
-                self._heartbeat(ws),
-                self._receive_loop(ws),
-            )
+            try:
+                # Run heartbeat + message receiver concurrently
+                await asyncio.gather(
+                    self._heartbeat(ws),
+                    self._receive_loop(ws),
+                )
+            finally:
+                self._ws = None
 
     async def _heartbeat(self, ws: Any) -> None:
         """Send PING every 10 s to keep the connection alive."""

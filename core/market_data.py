@@ -96,13 +96,14 @@ class MarketDataService:
     async def _sync_market(self) -> MarketInfo:
         """
         从 MarketResolver 获取当前有效市场，并同步 condition_id / token_id。
-        若市场发生切换，打印日志。
+        若市场发生切换，打印日志并动态订阅新 token。
         """
         info = await self._resolver.get_active_market()
-        if (
+        is_new_market = (
             self._current_market is None
             or self._current_market.condition_id != info.condition_id
-        ):
+        )
+        if is_new_market:
             logger.info(
                 "MarketDataService — 切换市场: slug=%s  condition=%s  "
                 "结算时间(UTC)=%s  剩余=%.0fs",
@@ -111,6 +112,11 @@ class MarketDataService:
                 info.end_time.isoformat(),
                 info.seconds_to_expiry,
             )
+            # 订阅新市场的 token，等待 WS 推送订单射快照
+            if self._ws_feed is not None:
+                await self._ws_feed.subscribe_tokens(
+                    info.up_token_id, info.down_token_id
+                )
         self._current_market = info
         self.condition_id = info.condition_id
         self.up_token_id = info.up_token_id
