@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     # 例如 20.0 = 亏损 20% 时触发止损。设为 0 可关闭止损。
     strategy_stop_loss_pct: float = Field(default=0.0, ge=0, lt=100)
 
+    # 止盈单类型：GTC（挂单等待成交）/ FOK（全部成交或取消）/ FAK（尽量成交剩余取消）
+    strategy_take_profit_order_type: str = Field(default="GTC")
+    # 止盈阈值（%，正数）：持仓盈利达到此百分比时止盈平仓。
+    # 例如 20.0 = 盈利 20% 时触发止盈。设为 0 可关闭止盈。
+    strategy_take_profit_pct: float = Field(default=0.0, ge=0, lt=1000)
+
     # ------------------------------------------------------------------ #
     # Logging
     # ------------------------------------------------------------------ #

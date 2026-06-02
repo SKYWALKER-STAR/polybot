@@ -277,6 +277,56 @@ class PositionTracker:
 
         return to_liquidate
 
+    def get_positions_to_take_profit(
+        self,
+        token_bid_map: dict[str, Optional[float]],
+        take_profit_pct: float,
+    ) -> list[tuple[Position, float]]:
+        """
+        Return a list of ``(position, current_bid)`` for every position whose
+        profit has reached ``take_profit_pct`` (expressed as a positive percentage,
+        e.g. 20.0 means close when position is up ≥20%).
+
+        Only positions that are not already in the ``liquidating`` state are
+        returned.
+
+        Parameters
+        ----------
+        token_bid_map : dict[token_id → best_bid]
+            Current best_bid for each tracked token.
+        take_profit_pct : float
+            Positive profit threshold.  E.g. 20.0 triggers when P&L ≥ +20%.
+        """
+        to_close: list[tuple[Position, float]] = []
+
+        for token_id, pos in self._positions.items():
+            if pos.liquidating:
+                continue
+
+            current_bid = token_bid_map.get(token_id)
+            if current_bid is None or current_bid <= 0:
+                logger.debug(
+                    "[PositionTracker] %s 无 best_bid，跳过止盈检查", token_id[:8]
+                )
+                continue
+
+            pnl = pos.pnl_pct(current_bid)
+            logger.debug(
+                "[PositionTracker] %s %s  P&L=%.2f%%  bid=%.4f  avg_entry=%.4f",
+                pos.outcome, token_id[:8], pnl, current_bid, pos.avg_entry_price,
+            )
+
+            if pnl >= abs(take_profit_pct):
+                logger.info(
+                    "[PositionTracker] ✓ 止盈触发！%s %s  P&L=%.2f%%  "
+                    "阈值=%.1f%%  bid=%.4f  均价=%.4f  总成本=%.2f USDC",
+                    pos.outcome, token_id[:8], pnl,
+                    take_profit_pct, current_bid, pos.avg_entry_price, pos.cost_usdc,
+                )
+                to_close.append((pos, current_bid))
+
+        return to_close
+
     def __len__(self) -> int:
         return len(self._positions)
 

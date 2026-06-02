@@ -226,9 +226,11 @@ class PolybBot:
             },
         )
 
-        # 2. 止损检查（在策略信号之前，优先清除局面)
+        # 2. 止损 / 止盈检查（在策略信号之前，优先清除局面）
         if settings.strategy_stop_loss_pct > 0:
             await self._check_stop_loss(up_data, down_data)
+        if settings.strategy_take_profit_pct > 0:
+            await self._check_take_profit(up_data, down_data)
 
         # 3. Run strategy
         try:
@@ -324,6 +326,69 @@ class PolybBot:
                     pos.liquidating = False
             except Exception as exc:
                 logger.exception("[StopLoss] 平仓请求异常: %s", exc)
+                pos.liquidating = False
+
+    # ------------------------------------------------------------------ #
+    # Take-profit
+    # ------------------------------------------------------------------ #
+
+    async def _check_take_profit(
+        self,
+        up_data: "MarketData",   # noqa: F821
+        down_data: "MarketData",  # noqa: F821
+    ) -> None:
+        """
+        Check every tracked open position for a take-profit trigger.
+
+        Uses ``best_bid`` from the already-fetched ``MarketData`` snapshot.
+        The bid price represents what we would receive if we sold immediately.
+        """
+        token_bid_map: dict[str, float | None] = {
+            up_data.token_id:   up_data.best_bid,
+            down_data.token_id: down_data.best_bid,
+        }
+
+        to_close = self._position_tracker.get_positions_to_take_profit(
+            token_bid_map=token_bid_map,
+            take_profit_pct=settings.strategy_take_profit_pct,
+        )
+
+        for pos, current_bid in to_close:
+            logger.info(
+                "[TakeProfit] 止盈平仓 %s %s — P&L=%.2f%%  平仓单价=%.4f  持股=%.4f",
+                pos.outcome, pos.token_id[:8],
+                pos.pnl_pct(current_bid), current_bid, pos.shares,
+            )
+            # 标记止盈进行中，避免同一持仓在后续 tick 重复触发
+            self._position_tracker.mark_liquidating(pos.token_id)
+
+            tp_order = pos.liquidation_order(
+                current_bid=current_bid,
+                order_type=settings.strategy_take_profit_order_type,
+                strategy_tag="take_profit",
+            )
+            logger.info(
+                "[TakeProfit] 下单平仓 — SELL %s %s @%.4f  size=%.4f USDC",
+                settings.strategy_take_profit_order_type,
+                pos.outcome, tp_order.price, tp_order.size,
+            )
+            try:
+                result = await self._order_manager.place_order(tp_order)
+                if result.success:
+                    logger.info(
+                        "[TakeProfit] 平仓成功 — local_id=%s exchange_id=%s",
+                        result.local_order_id, result.exchange_order_id,
+                    )
+                    self._position_tracker.close_position(pos.token_id)
+                else:
+                    logger.error(
+                        "[TakeProfit] 平仓失败 — %s  将在下一个 tick 重试",
+                        result.error,
+                    )
+                    # 重置标志，允许下一个 tick 重试
+                    pos.liquidating = False
+            except Exception as exc:
+                logger.exception("[TakeProfit] 平仓请求异常: %s", exc)
                 pos.liquidating = False
 
     # ------------------------------------------------------------------ #
