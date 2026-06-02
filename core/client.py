@@ -97,12 +97,24 @@ class PolymarketClient:
                shares = round(size / price, 2)
         """
         if order_type in ("FOK", "FAK"):
-            response = await self.client.place_market_order(
-                token_id=token_id,
-                side=side,
-                amount=str(round(size, 6)),
-                order_type=order_type,
-            )
+            if side == "SELL":
+                # SELL 市价单：SDK 要求 shares（要卖出的股数），不接受 amount
+                # size 传入的是 USDC 价值（shares * price），还原为股数
+                shares_to_sell = round(size / price, 6) if price > 0 else round(size, 6)
+                response = await self.client.place_market_order(
+                    token_id=token_id,
+                    side=side,
+                    shares=str(shares_to_sell),
+                    order_type=order_type,
+                )
+            else:
+                # BUY 市价单：SDK 要求 amount（USDC 花费额）
+                response = await self.client.place_market_order(
+                    token_id=token_id,
+                    side=side,
+                    amount=str(round(size, 6)),
+                    order_type=order_type,
+                )
         else:
             shares = round(size / price, 2)
             response = await self.client.place_limit_order(
