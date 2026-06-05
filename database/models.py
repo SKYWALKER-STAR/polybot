@@ -44,8 +44,10 @@ class OrderSide(str, enum.Enum):
 
 
 class Outcome(str, enum.Enum):
-    UP = "UP"
+    UP   = "UP"
     DOWN = "DOWN"
+    YES  = "YES"   # 用于二元市场套利和多选市场
+    NO   = "NO"
 
 
 class OrderStatus(str, enum.Enum):

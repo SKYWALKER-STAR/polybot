@@ -124,6 +124,11 @@ class ArbOpportunity:
     yes_price: float   # 买入用 ask；卖出用 bid
     no_price: float
 
+    # MarketData.outcome 的原始字符串（如 "UP"/"DOWN" 或 "YES"/"NO"）
+    # 直接从传入的 MarketData 读取，避免硬编码
+    yes_outcome: str
+    no_outcome: str
+
     trade_size_usdc: float   # 本次套利规模（USDC）
     gross_profit: float      # 税前利润（USDC）
     net_profit: float        # 净利润（扣除估算 gas）
@@ -347,6 +352,8 @@ class BtcArbStrategy:
                             no_token_id=no_data.token_id,
                             yes_price=yes_ask,
                             no_price=no_ask,
+                            yes_outcome=yes_data.outcome,
+                            no_outcome=no_data.outcome,
                             trade_size_usdc=trade_usdc,
                             gross_profit=gross_profit,
                             net_profit=net_profit,
@@ -392,6 +399,8 @@ class BtcArbStrategy:
                             no_token_id=no_data.token_id,
                             yes_price=yes_bid,
                             no_price=no_bid,
+                            yes_outcome=yes_data.outcome,
+                            no_outcome=no_data.outcome,
                             trade_size_usdc=trade_usdc,
                             gross_profit=gross_profit,
                             net_profit=net_profit,
@@ -438,7 +447,7 @@ class BtcArbStrategy:
         yes_req = OrderRequest(
             token_id=opp.yes_token_id,
             condition_id=opp.condition_id,
-            outcome="YES",
+            outcome=opp.yes_outcome,
             side="BUY",
             size=half_usdc,
             price=round(min(0.99, opp.yes_price + self._cfg.slippage_tolerance), 4),
@@ -448,7 +457,7 @@ class BtcArbStrategy:
         no_req = OrderRequest(
             token_id=opp.no_token_id,
             condition_id=opp.condition_id,
-            outcome="NO",
+            outcome=opp.no_outcome,
             side="BUY",
             size=half_usdc,
             price=round(min(0.99, opp.no_price + self._cfg.slippage_tolerance), 4),
@@ -568,9 +577,9 @@ class BtcArbStrategy:
         yes_req = OrderRequest(
             token_id=opp.yes_token_id,
             condition_id=opp.condition_id,
-            outcome="YES",
+            outcome=opp.yes_outcome,
             side="SELL",
-            size=split_amount * opp.yes_price,  # USDC 价值
+            size=split_amount * opp.yes_price,  # USDC 价値
             price=yes_sell_price,
             order_type="FOK",
             strategy_tag=f"{self.name}_split_yes",
@@ -578,7 +587,7 @@ class BtcArbStrategy:
         no_req = OrderRequest(
             token_id=opp.no_token_id,
             condition_id=opp.condition_id,
-            outcome="NO",
+            outcome=opp.no_outcome,
             side="SELL",
             size=split_amount * opp.no_price,
             price=no_sell_price,

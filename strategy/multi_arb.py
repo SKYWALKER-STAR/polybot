@@ -111,6 +111,9 @@ class MultiArbOpportunity:
     no_token_id: str
     yes_price: float
     no_price: float
+    # MarketData.outcome 的原始字符串（通常为 "YES"/"NO"）
+    yes_outcome: str
+    no_outcome: str
     trade_size_usdc: float
     gross_profit: float
     net_profit: float
@@ -364,6 +367,8 @@ class MultiArbStrategy:
                             no_token_id=no_data.token_id,
                             yes_price=yes_ask,
                             no_price=no_ask,
+                            yes_outcome=yes_data.outcome,
+                            no_outcome=no_data.outcome,
                             trade_size_usdc=trade_usdc,
                             gross_profit=gross_profit,
                             net_profit=net_profit,
@@ -407,6 +412,8 @@ class MultiArbStrategy:
                             no_token_id=no_data.token_id,
                             yes_price=yes_bid,
                             no_price=no_bid,
+                            yes_outcome=yes_data.outcome,
+                            no_outcome=no_data.outcome,
                             trade_size_usdc=trade_usdc,
                             gross_profit=gross_profit,
                             net_profit=net_profit,
@@ -455,7 +462,7 @@ class MultiArbStrategy:
         yes_req = OrderRequest(
             token_id=opp.yes_token_id,
             condition_id=opp.condition_id,
-            outcome="YES",
+            outcome=opp.yes_outcome,
             side="BUY",
             size=half_usdc,
             price=round(min(0.99, opp.yes_price + self._cfg.slippage_tolerance), 4),
@@ -465,7 +472,7 @@ class MultiArbStrategy:
         no_req = OrderRequest(
             token_id=opp.no_token_id,
             condition_id=opp.condition_id,
-            outcome="NO",
+            outcome=opp.no_outcome,
             side="BUY",
             size=half_usdc,
             price=round(min(0.99, opp.no_price + self._cfg.slippage_tolerance), 4),
@@ -516,7 +523,7 @@ class MultiArbStrategy:
         yes_req = OrderRequest(
             token_id=opp.yes_token_id,
             condition_id=opp.condition_id,
-            outcome="YES",
+            outcome=opp.yes_outcome,
             side="SELL",
             size=opp.trade_size_usdc * opp.yes_price,
             price=yes_sell_price,
@@ -526,7 +533,7 @@ class MultiArbStrategy:
         no_req = OrderRequest(
             token_id=opp.no_token_id,
             condition_id=opp.condition_id,
-            outcome="NO",
+            outcome=opp.no_outcome,
             side="SELL",
             size=opp.trade_size_usdc * opp.no_price,
             price=no_sell_price,
