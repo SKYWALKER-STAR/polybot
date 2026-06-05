@@ -257,12 +257,12 @@ class MultiArbStrategy:
 
             _log(
                 "[%s][%s] "
-                "YES lowest_ask=%.4f  highest_bid=%.4f | "
-                "NO  lowest_ask=%.4f  highest_bid=%.4f | "
+                "%s lowest_ask=%.4f  highest_bid=%.4f | "
+                "%s lowest_ask=%.4f  highest_bid=%.4f | "
                 "merge_sum=%.4f  split_sum=%.4f",
                 self._label, outcome_title,
-                yes_ask or 0.0, yes_bid or 0.0,
-                no_ask  or 0.0, no_bid  or 0.0,
+                yes_data.outcome, yes_ask or 0.0, yes_bid or 0.0,
+                no_data.outcome,  no_ask  or 0.0, no_bid  or 0.0,
                 merge_sum, split_sum,
             )
 
@@ -275,16 +275,16 @@ class MultiArbStrategy:
             logger.info(
                 "[%s][%s] ★ 套利机会 ★  模式=%s%s\n"
                 "        订单簿快照:\n"
-                "          YES  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
-                "          NO   lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
-                "          merge_sum(YES_ask+NO_ask)=%.4f  偏离$1=%.4f\n"
-                "          split_sum(YES_bid+NO_bid)=%.4f  偏离$1=%.4f\n"
+                "          %s  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
+                "          %s  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
+                "          merge_sum(%s_ask+%s_ask)=%.4f  偏离$1=%.4f\n"
+                "          split_sum(%s_bid+%s_bid)=%.4f  偏离$1=%.4f\n"
                 "        套利规模=%.2f USDC  预期净利润=$%.4f",
                 self._label, outcome_title, opp.mode.value, observe_tag,
-                yes_ask or 0.0, yes_bid or 0.0,
-                no_ask  or 0.0, no_bid  or 0.0,
-                merge_sum, 1.0 - merge_sum,
-                split_sum, split_sum - 1.0,
+                opp.yes_outcome, yes_ask or 0.0, yes_bid or 0.0,
+                opp.no_outcome,  no_ask  or 0.0, no_bid  or 0.0,
+                opp.yes_outcome, opp.no_outcome, merge_sum, 1.0 - merge_sum,
+                opp.yes_outcome, opp.no_outcome, split_sum, split_sum - 1.0,
                 opp.trade_size_usdc, opp.net_profit,
             )
 
@@ -376,9 +376,10 @@ class MultiArbStrategy:
                 else:
                     logger.debug(
                         "[%s][%s] Merge 价差满足 (sum=%.4f) 但流动性不足 "
-                        "(YES_depth=%.1f  NO_depth=%.1f  需=%.1f)",
+                        "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
                         self._label, outcome_title, ask_sum,
-                        yes_ask_depth, no_ask_depth,
+                        yes_data.outcome, yes_ask_depth,
+                        no_data.outcome,  no_ask_depth,
                         self._cfg.liquidity_min_size,
                     )
 
@@ -421,9 +422,10 @@ class MultiArbStrategy:
                 else:
                     logger.debug(
                         "[%s][%s] Split 价差满足 (sum=%.4f) 但流动性不足 "
-                        "(YES_depth=%.1f  NO_depth=%.1f  需=%.1f)",
+                        "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
                         self._label, outcome_title, bid_sum,
-                        yes_bid_depth, no_bid_depth,
+                        yes_data.outcome, yes_bid_depth,
+                        no_data.outcome,  no_bid_depth,
                         self._cfg.liquidity_min_size,
                     )
 
@@ -481,11 +483,11 @@ class MultiArbStrategy:
         )
 
         logger.info(
-            "[%s][%s] MERGE — 并发买入 YES %.4f shares @%.4f + NO %.4f shares @%.4f  "
+            "[%s][%s] MERGE — 并发买入 %s %.4f shares @%.4f + %s %.4f shares @%.4f  "
             "总规模=%.2f USDC  预期净利=$%.4f",
             self._label, opp.outcome_title,
-            yes_shares, yes_req.price,
-            no_shares,  no_req.price,
+            opp.yes_outcome, yes_shares, yes_req.price,
+            opp.no_outcome,  no_shares,  no_req.price,
             opp.trade_size_usdc, opp.net_profit,
         )
 
@@ -497,17 +499,20 @@ class MultiArbStrategy:
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         logger.info(
-            "[%s][%s] MERGE 买单完成 — YES ok=%s  NO ok=%s  耗时=%.1fms",
+            "[%s][%s] MERGE 买单完成 — %s ok=%s  %s ok=%s  耗时=%.1fms",
             self._label, opp.outcome_title,
-            yes_result.success, no_result.success, elapsed_ms,
+            opp.yes_outcome, yes_result.success,
+            opp.no_outcome,  no_result.success,
+            elapsed_ms,
         )
 
         if not yes_result.success or not no_result.success:
             logger.error(
-                "[%s][%s] MERGE 买单未全部成交 (YES=%s NO=%s)，跳过 merge 操作。"
+                "[%s][%s] MERGE 买单未全部成交 (%s=%s %s=%s)，跳过 merge 操作。"
                 "如有单边头寸请人工处理。",
                 self._label, opp.outcome_title,
-                yes_result.success, no_result.success,
+                opp.yes_outcome, yes_result.success,
+                opp.no_outcome,  no_result.success,
             )
             self._stats.failures += 1
 
@@ -542,10 +547,11 @@ class MultiArbStrategy:
         )
 
         logger.info(
-            "[%s][%s] SPLIT — 并发卖出 YES @%.4f + NO @%.4f  "
+            "[%s][%s] SPLIT — 并发卖出 %s @%.4f + %s @%.4f  "
             "总规模=%.2f USDC  预期净利=$%.4f",
             self._label, opp.outcome_title,
-            yes_sell_price, no_sell_price,
+            opp.yes_outcome, yes_sell_price,
+            opp.no_outcome,  no_sell_price,
             opp.trade_size_usdc, opp.net_profit,
         )
 
@@ -557,7 +563,9 @@ class MultiArbStrategy:
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         logger.info(
-            "[%s][%s] SPLIT 卖单完成 — YES ok=%s  NO ok=%s  耗时=%.1fms",
+            "[%s][%s] SPLIT 卖单完成 — %s ok=%s  %s ok=%s  耗时=%.1fms",
             self._label, opp.outcome_title,
-            yes_result.success, no_result.success, elapsed_ms,
+            opp.yes_outcome, yes_result.success,
+            opp.no_outcome,  no_result.success,
+            elapsed_ms,
         )

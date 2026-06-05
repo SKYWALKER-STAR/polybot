@@ -248,12 +248,12 @@ class BtcArbStrategy:
         _price_log = logger.info if self._cfg.observe_mode else logger.debug
         _price_log(
             "[%s] 订单簿市价 — "
-            "YES lowest_ask=%.4f  highest_bid=%.4f | "
-            "NO  lowest_ask=%.4f  highest_bid=%.4f | "
+            "%s lowest_ask=%.4f  highest_bid=%.4f | "
+            "%s lowest_ask=%.4f  highest_bid=%.4f | "
             "merge_sum(ask+ask)=%.4f  split_sum(bid+bid)=%.4f",
             self.name,
-            yes_ask or 0.0, yes_bid or 0.0,
-            no_ask  or 0.0, no_bid  or 0.0,
+            yes_data.outcome, yes_ask or 0.0, yes_bid or 0.0,
+            no_data.outcome,  no_ask  or 0.0, no_bid  or 0.0,
             merge_sum, split_sum,
         )
 
@@ -266,16 +266,16 @@ class BtcArbStrategy:
         logger.info(
             "[%s] ★ 套利机会 ★  模式=%s%s\n"
             "        订单簿快照:\n"
-            "          YES  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
-            "          NO   lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
-            "          merge_sum(YES_ask+NO_ask)=%.4f  偏离$1=%.4f\n"
-            "          split_sum(YES_bid+NO_bid)=%.4f  偏离$1=%.4f\n"
+            "          %s  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
+            "          %s  lowest_ask(买入价)=%.4f   highest_bid(卖出价)=%.4f\n"
+            "          merge_sum(%s_ask+%s_ask)=%.4f  偏离$1=%.4f\n"
+            "          split_sum(%s_bid+%s_bid)=%.4f  偏离$1=%.4f\n"
             "        套利规模=%.2f USDC  预期净利润=$%.4f",
             self.name, opp.mode.value, observe_tag,
-            yes_ask or 0.0, yes_bid or 0.0,
-            no_ask  or 0.0, no_bid  or 0.0,
-            merge_sum, 1.0 - merge_sum,
-            split_sum, split_sum - 1.0,
+            opp.yes_outcome, yes_ask or 0.0, yes_bid or 0.0,
+            opp.no_outcome,  no_ask  or 0.0, no_bid  or 0.0,
+            opp.yes_outcome, opp.no_outcome, merge_sum, 1.0 - merge_sum,
+            opp.yes_outcome, opp.no_outcome, split_sum, split_sum - 1.0,
             opp.trade_size_usdc, opp.net_profit,
         )
 
@@ -361,11 +361,10 @@ class BtcArbStrategy:
                 else:
                     logger.info(
                         "[%s] Merge 价差满足 (sum=%.4f) 但流动性不足 "
-                        "(YES_depth=%.1f  NO_depth=%.1f  需=%.1f)",
-                        self.name, ask_sum,
-                        yes_ask_depth, no_ask_depth,
-                        self._cfg.liquidity_min_size,
-                    )
+            "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
+            self.name, ask_sum,
+            yes_data.outcome, yes_ask_depth,
+            no_data.outcome,  no_ask_depth,
 
         # ---- Split 套利 -------------------------------------------
         if yes_bid is not None and no_bid is not None:
@@ -408,18 +407,17 @@ class BtcArbStrategy:
                 else:
                     logger.info(
                         "[%s] Split 价差满足 (sum=%.4f) 但流动性不足 "
-                        "(YES_depth=%.1f  NO_depth=%.1f  需=%.1f)",
-                        self.name, bid_sum,
-                        yes_bid_depth, no_bid_depth,
-                        self._cfg.liquidity_min_size,
-                    )
+            "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
+            self.name, bid_sum,
+            yes_data.outcome, yes_bid_depth,
+            no_data.outcome,  no_bid_depth,
 
         logger.info(
-            "[%s] 无套利机会 — YES ask=%.4f bid=%.4f | NO ask=%.4f bid=%.4f | "
+            "[%s] 无套利机会 — %s ask=%.4f bid=%.4f | %s ask=%.4f bid=%.4f | "
             "merge_sum=%.4f  split_sum=%.4f",
             self.name,
-            yes_ask or 0, yes_bid or 0,
-            no_ask  or 0, no_bid  or 0,
+            yes_data.outcome, yes_ask or 0, yes_bid or 0,
+            no_data.outcome,  no_ask  or 0, no_bid  or 0,
             (yes_ask or 0) + (no_ask or 0),
             (yes_bid or 0) + (no_bid or 0),
         )
@@ -466,11 +464,11 @@ class BtcArbStrategy:
         )
 
         logger.info(
-            "[%s] MERGE — 并发买入 YES %.4f shares @%.4f + NO %.4f shares @%.4f  "
+            "[%s] MERGE — 并发买入 %s %.4f shares @%.4f + %s %.4f shares @%.4f  "
             "总规模=%.2f USDC  预期净利=$%.4f",
             self.name,
-            yes_shares, yes_req.price,
-            no_shares, no_req.price,
+            opp.yes_outcome, yes_shares, yes_req.price,
+            opp.no_outcome,  no_shares,  no_req.price,
             opp.trade_size_usdc, opp.net_profit,
         )
 
@@ -482,8 +480,11 @@ class BtcArbStrategy:
 
         buy_ms = (time.perf_counter() - t0) * 1000
         logger.info(
-            "[%s] MERGE 买单完成 — YES ok=%s  NO ok=%s  耗时=%.1fms",
-            self.name, yes_result.success, no_result.success, buy_ms,
+            "[%s] MERGE 买单完成 — %s ok=%s  %s ok=%s  耗时=%.1fms",
+            self.name,
+            opp.yes_outcome, yes_result.success,
+            opp.no_outcome,  no_result.success,
+            buy_ms,
         )
 
         if yes_result.success and no_result.success:
@@ -492,14 +493,14 @@ class BtcArbStrategy:
             await self._do_merge(opp.condition_id, merge_amount, opp.net_profit)
         elif yes_result.success and not no_result.success:
             logger.error(
-                "[%s] MERGE 风险！YES 成交但 NO 未成交 — 需要人工平仓 YES 头寸",
-                self.name,
+                "[%s] MERGE 风险！%s 成交但 %s 未成交 — 需要人工平仓 %s 头寸",
+                self.name, opp.yes_outcome, opp.no_outcome, opp.yes_outcome,
             )
             self._stats.failures += 1
         elif not yes_result.success and no_result.success:
             logger.error(
-                "[%s] MERGE 风险！NO 成交但 YES 未成交 — 需要人工平仓 NO 头寸",
-                self.name,
+                "[%s] MERGE 风险！%s 成交但 %s 未成交 — 需要人工平仓 %s 头寸",
+                self.name, opp.no_outcome, opp.yes_outcome, opp.no_outcome,
             )
             self._stats.failures += 1
         else:
@@ -548,10 +549,13 @@ class BtcArbStrategy:
         split_amount = opp.trade_size_usdc
 
         logger.info(
-            "[%s] SPLIT — 拆分 %.2f pUSD  YES_bid=%.4f  NO_bid=%.4f  "
+            "[%s] SPLIT — 拆分 %.2f pUSD  %s_bid=%.4f  %s_bid=%.4f  "
             "预期净利=$%.4f",
             self.name,
-            split_amount, opp.yes_price, opp.no_price, opp.net_profit,
+            split_amount,
+            opp.yes_outcome, opp.yes_price,
+            opp.no_outcome,  opp.no_price,
+            opp.net_profit,
         )
 
         # Step 1: 链上 split
@@ -603,8 +607,11 @@ class BtcArbStrategy:
         sell_ms = (time.perf_counter() - t1) * 1000
 
         logger.info(
-            "[%s] SPLIT 卖单完成 — YES ok=%s  NO ok=%s  耗时=%.1fms",
-            self.name, yes_result.success, no_result.success, sell_ms,
+            "[%s] SPLIT 卖单完成 — %s ok=%s  %s ok=%s  耗时=%.1fms",
+            self.name,
+            opp.yes_outcome, yes_result.success,
+            opp.no_outcome,  no_result.success,
+            sell_ms,
         )
 
         if yes_result.success and no_result.success:
@@ -617,9 +624,11 @@ class BtcArbStrategy:
             self._stats.total_net_profit += opp.net_profit
         else:
             logger.error(
-                "[%s] SPLIT 卖单未完全成交 — YES ok=%s  NO ok=%s  "
+                "[%s] SPLIT 卖单未完全成交 — %s ok=%s  %s ok=%s  "
                 "已拆分头寸可能需要人工处理",
-                self.name, yes_result.success, no_result.success,
+                self.name,
+                opp.yes_outcome, yes_result.success,
+                opp.no_outcome,  no_result.success,
             )
             self._stats.failures += 1
 
