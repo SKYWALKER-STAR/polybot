@@ -22,6 +22,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from config.settings import settings
 from core.client import PolymarketClient
@@ -35,6 +36,7 @@ from database.connection import init_db
 from database.models import AuditAction, AuditResult
 from strategy.base import BaseStrategy
 from strategy.btc_5min import Btc5MinStrategy, StrategyConfig
+from strategy.btc_arb import BtcArbStrategy, ArbConfig
 
 # ------------------------------------------------------------------ #
 # Logging setup
@@ -70,7 +72,7 @@ class PolybBot:
     Orchestrates all components and runs the main polling loop.
     """
 
-    def __init__(self, strategy: BaseStrategy) -> None:
+    def __init__(self, strategy: Optional[BaseStrategy]) -> None:
         self._strategy = strategy
         self._audit = AuditLogger()
         self._client = PolymarketClient()
@@ -81,11 +83,16 @@ class PolybBot:
     # ------------------------------------------------------------------ #
 
     async def start(self) -> None:
+        active = []
+        if self._strategy is not None:
+            active.append(self._strategy.name)
+        if settings.arb_enabled:
+            active.append("btc_arb" + ("[观察]" if settings.arb_observe_mode else ""))
         logger.info(
-            "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  strategy=%s",
+            "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  active_strategies=%s",
             settings.dry_run,
             settings.poll_interval_seconds,
-            self._strategy.name,
+            ", ".join(active) if active else "(none)",
         )
 
         # --- infrastructure -----------------------------------------
@@ -131,15 +138,42 @@ class PolybBot:
         self._position_tracker = PositionTracker()
         self._last_condition_id: str = ""  # 用于检测市场切换
 
+        # --- 套利策略（可选）----------------------------------------
+        self._arb_strategy: Optional[BtcArbStrategy] = None
+        if settings.arb_enabled:
+            arb_config = ArbConfig(
+                min_merge_spread=settings.arb_min_merge_spread,
+                min_split_spread=settings.arb_min_split_spread,
+                max_trade_usdc=settings.arb_max_trade_usdc,
+                base_trade_usdc=settings.arb_base_trade_usdc,
+                cooldown_seconds=settings.arb_cooldown_seconds,
+                liquidity_min_size=settings.arb_liquidity_min_size,
+                slippage_tolerance=settings.arb_slippage_tolerance,
+                estimated_gas_usdc=settings.arb_estimated_gas_usdc,
+                observe_mode=settings.arb_observe_mode,
+            )
+            self._arb_strategy = BtcArbStrategy(
+                client=self._client,
+                order_manager=self._order_manager,
+                config=arb_config,
+            )
+            self._arb_strategy.on_start()
+            logger.info("套利策略已启用 (btc_arb)")
+        else:
+            logger.info("套利策略未启用（arb_enabled=False）")
+
         # --- signal handlers ----------------------------------------
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
 
         # --- strategy init ------------------------------------------
-        self._strategy.on_start()
+        if self._strategy is not None:
+            self._strategy.on_start()
         self._audit.bot_start(
             details={
-                "strategy": self._strategy.name,
+                "btc_5min_enabled": self._strategy is not None,
+                "arb_enabled": settings.arb_enabled,
+                "arb_observe_mode": settings.arb_observe_mode,
                 "dry_run": settings.dry_run,
                 "poll_interval": settings.poll_interval_seconds,
                 "started_at": datetime.now(timezone.utc).isoformat(),
@@ -159,7 +193,10 @@ class PolybBot:
                 if self._running:
                     await asyncio.sleep(settings.poll_interval_seconds)
         finally:
-            self._strategy.on_stop()
+            if self._strategy is not None:
+                self._strategy.on_stop()
+            if self._arb_strategy is not None:
+                self._arb_strategy.on_stop()
             self._audit.bot_stop(
                 details={"stopped_at": datetime.now(timezone.utc).isoformat()}
             )
@@ -226,13 +263,22 @@ class PolybBot:
             },
         )
 
+        # 2a. 套利策略 tick（高优先级，在普通策略之前执行）
+        if self._arb_strategy is not None:
+            try:
+                await self._arb_strategy.on_tick(up_data, down_data)
+            except Exception as exc:
+                logger.exception("[btc_arb] on_tick 异常: %s", exc)
+
         # 2. 止损 / 止盈检查（在策略信号之前，优先清除局面）
-        if settings.strategy_stop_loss_pct > 0:
+        if self._strategy is not None and settings.strategy_stop_loss_pct > 0:
             await self._check_stop_loss(up_data, down_data)
-        if settings.strategy_take_profit_pct > 0:
+        if self._strategy is not None and settings.strategy_take_profit_pct > 0:
             await self._check_take_profit(up_data, down_data)
 
         # 3. Run strategy
+        if self._strategy is None:
+            return
         try:
             order_requests = self._strategy.on_tick(up_data, down_data)
         except Exception as exc:
@@ -401,21 +447,18 @@ class PolybBot:
 
 
 # ------------------------------------------------------------------ #
-# Strategy factory — edit here to swap strategies
+# Strategy factory
 # ------------------------------------------------------------------ #
 
-def _build_strategy() -> BaseStrategy:
+def _build_strategy() -> Optional[BaseStrategy]:
     """
-    实例化并配置当前使用的交易策略。
+    根据 BTC_5MIN_ENABLED 配置决定是否实例化方向性策略。
+    返回 None 表示该策略已关闭。
+    """
+    if not settings.btc_5min_enabled:
+        logger.info("btc_5min 策略已关闭（BTC_5MIN_ENABLED=false）")
+        return None
 
-    修改押注金额或触发条件请在此处调整 StrategyConfig 参数：
-      - fok_bet_usdc                   FOK 市价单押注金额（USDC）
-      - gtc_bet_usdc                   GTC 限价单押注金额（USDC）
-      - hedge_bet_usdc                 对冲方向押注金额（USDC）
-      - entry_seconds_before_settlement 距结算多少秒内入场
-      - target_price                    目标价格（0~1）
-      - price_tolerance                 价格容忍带（0~1，如 0.03 = ±3%）
-    """
     config = StrategyConfig(
         fok_bet_usdc=settings.strategy_fok_bet_usdc,
         fak_bet_usdc=settings.strategy_fak_bet_usdc,
@@ -436,5 +479,11 @@ def _build_strategy() -> BaseStrategy:
 if __name__ == "__main__":
     _setup_logging()
     strategy = _build_strategy()
+    if strategy is None and not settings.arb_enabled:
+        logger.error(
+            "配置错误：btc_5min 和 btc_arb 策略均已关闭。"
+            "请在 .env 中至少启用一个策略（BTC_5MIN_ENABLED=true 或 ARB_ENABLED=true）。"
+        )
+        sys.exit(1)
     bot = PolybBot(strategy=strategy)
     asyncio.run(bot.start())

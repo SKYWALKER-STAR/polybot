@@ -1,29 +1,63 @@
 # Polybot — Polymarket 自动交易机器人
 
-面向 Polymarket 的自动化交易框架，主要针对 **BTC 5分钟涨跌** 二元预测市场。
+面向 Polymarket 的自动化交易框架，针对 **BTC 5分钟涨跌** 二元预测市场，内置两套策略：
+
+| 策略 | 文件 | 说明 |
+|---|---|---|
+| `btc_5min` | [strategy/btc_5min.py](strategy/btc_5min.py) | 临近结算时押注涨/跌方向 |
+| `btc_arb` | [strategy/btc_arb.py](strategy/btc_arb.py) | **YES+NO 价差无风险套利**（Split/Merge） |
+
+两套策略可**同时运行**，互不干扰；也可通过 `.env` 单独开启任意一套。
+
+### 策略开关速查
+
+```ini
+# 仅运行方向性策略
+BTC_5MIN_ENABLED=true
+ARB_ENABLED=false
+
+# 仅运行套利策略（上线前建议先开观察模式）
+BTC_5MIN_ENABLED=false
+ARB_ENABLED=true
+ARB_OBSERVE_MODE=true   # 改为 false 开始真实套利
+
+# 同时运行两套策略
+BTC_5MIN_ENABLED=true
+ARB_ENABLED=true
+```
+
+> 两项均为 `false` 时，bot 启动会报错并退出，防止空跑。
+
+---
 
 ## 项目结构
 
 ```
 polybot/
 ├── config/
-│   └── settings.py        # 类型化配置，从 .env 文件加载
+│   └── settings.py          # 类型化配置，从 .env 文件加载
 ├── core/
-│   ├── client.py          # Polymarket CLOB API 封装（认证、签名）
-│   ├── market_data.py     # 行情查询 + 快照持久化
-│   └── order_manager.py   # 下单、取消订单、风控检查
+│   ├── client.py            # Polymarket CLOB API 封装（含 split/merge）
+│   ├── market_data.py       # 行情查询 + 快照持久化
+│   ├── market_resolver.py   # 自动跟踪下一个 5min 市场
+│   ├── order_manager.py     # 下单、取消订单、风控检查
+│   ├── position_tracker.py  # 持仓跟踪（止损/止盈使用）
+│   └── ws_market_feed.py    # WebSocket 毫秒级行情订阅
 ├── strategy/
-│   ├── base.py            # 抽象策略基类（接口定义）
-│   └── btc_5min.py        # BTC 5分钟策略占位实现 ← 主要编写入口
+│   ├── base.py              # 抽象策略基类（接口定义）
+│   ├── btc_5min.py          # BTC 5分钟方向性策略
+│   └── btc_arb.py           # YES/NO 价差无风险套利策略 ← 新增
 ├── database/
-│   ├── connection.py      # SQLAlchemy 引擎与会话工厂
-│   └── models.py          # ORM 模型：orders / trades / market_snapshots / audit_logs
+│   ├── connection.py        # SQLAlchemy 引擎与会话工厂
+│   └── models.py            # ORM 模型：orders / market_snapshots / audit_logs
 ├── audit/
-│   └── logger.py          # 操作审计，全量写入 PostgreSQL
-├── bot.py                 # 程序入口与主循环，策略工厂在此切换
+│   └── logger.py            # 操作审计，全量写入 PostgreSQL
+├── bot.py                   # 程序入口与主循环
 ├── requirements.txt
 └── .env.example
 ```
+
+---
 
 ## 快速开始
 
@@ -43,7 +77,10 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填写 PRIVATE_KEY、BTC_5MIN_* 市场 ID、DATABASE_URL
+# 编辑 .env，至少填写以下必填项：
+#   PRIVATE_KEY           — 钱包私钥（hex）
+#   BTC_5MIN_START_TIMESTAMP — 初始市场的 Unix 时间戳
+#   DATABASE_URL          — PostgreSQL DSN
 ```
 
 ### 4. 创建数据库
@@ -54,7 +91,7 @@ CREATE USER polybot WITH PASSWORD 'secret';
 GRANT ALL PRIVILEGES ON DATABASE polybot TO polybot;
 ```
 
-机器人在首次启动时会自动调用 `init_db()` 创建所有数据表。
+机器人首次启动时会自动调用 `init_db()` 创建所有数据表。
 
 ### 5. 以干跑模式运行（安全默认）
 
@@ -66,33 +103,106 @@ python bot.py
 
 ### 6. 开启真实交易
 
-仅在充分验证策略行为正确后再切换。
+仅在充分验证策略行为后再切换。
 
 ```bash
 # 在 .env 中修改：
 DRY_RUN=false
-
 python bot.py
 ```
 
 ---
 
-## 实现交易策略
+## 策略一：BTC 5分钟方向性策略（btc_5min）
 
-打开 [strategy/btc_5min.py](strategy/btc_5min.py)，在 `_generate_signal()` 中填写信号逻辑：
+**原理**：在市场结算前 N 秒，当 UP 或 DOWN 的 best_ask 落入目标价格区间时，押注该方向。
 
-```python
-def _generate_signal(self, yes_data: MarketData, no_data: MarketData) -> Signal:
-    # 在此填写你的信号逻辑
-    # 返回 Signal.BUY_YES、Signal.BUY_NO 或 Signal.NONE
-    ...
+### 核心参数（`.env`）
+
+```ini
+# 押注金额（USDC）
+STRATEGY_FOK_BET_USDC=5.0       # FOK 市价单，立即全成交或取消
+STRATEGY_FAK_BET_USDC=0.0       # FAK 单（尽量成交，剩余取消）
+STRATEGY_GTC_BET_USDC=5.0       # GTC 限价单
+STRATEGY_HEDGE_BET_USDC=0.0     # 对冲反方向金额（0 = 关闭对冲）
+
+# 触发条件
+STRATEGY_ENTRY_SECONDS=60       # 距结算多少秒内开始检查
+STRATEGY_TARGET_PRICE=0.80      # 目标入场价格（0~1）
+STRATEGY_PRICE_TOLERANCE=0.03   # 价格容忍带（±3%）
+
+# 止损 / 止盈
+STRATEGY_STOP_LOSS_PCT=20.0     # 亏损 20% 触发止损（0 = 关闭）
+STRATEGY_TAKE_PROFIT_PCT=50.0   # 盈利 50% 触发止盈（0 = 关闭）
 ```
 
-`yes_data` 和 `no_data` 是 [`MarketData`](core/market_data.py) 数据类，包含最优买卖价、中间价、最新成交价以及完整的委托簿数据。
+---
 
-价格阈值和下单大小可通过同文件的 `StrategyConfig` 调整。
+## 策略二：YES/NO 价差无风险套利（btc_arb）
 
-若需切换为完全不同的策略，继承 `BaseStrategy`、实现 `on_tick()`，然后修改 [bot.py](bot.py) 末尾的 `_build_strategy()` 工厂函数即可。
+**原理**：Polymarket 二元市场中，任意数量的 YES + NO token 总可以合并（merge）成等额 pUSD，也可以将 pUSD 拆分（split）成等量 YES + NO。理论上：
+
+```
+YES_ask + NO_ask = $1.00（无套利均衡）
+```
+
+当市场情绪踩踏或流动性不平衡时，这个等式会偏离，产生**纯无风险价差**：
+
+| 场景 | 条件 | 操作 | 利润来源 |
+|---|---|---|---|
+| **Merge 套利** | `YES_ask + NO_ask < $1` | 同时买入双边 → merge → 得到 $1 pUSD | `$1 - (YES_ask + NO_ask)` |
+| **Split 套利** | `YES_bid + NO_bid > $1` | split $1 pUSD → 同时卖出双边 | `(YES_bid + NO_bid) - $1` |
+
+两种模式均与 BTC 实际涨跌结果**完全无关**。
+
+### 执行流程（毫秒级）
+
+```
+Merge 套利：
+  asyncio.gather(
+      FOK BUY YES @ask,    ← 两笔订单并发提交
+      FOK BUY NO  @ask,
+  )
+  → merge_positions(condition_id, amount)  ← 链上合并
+
+Split 套利：
+  split_position(condition_id, amount)     ← 链上拆分
+  asyncio.gather(
+      FOK SELL YES @bid,   ← 两笔订单并发提交
+      FOK SELL NO  @bid,
+  )
+```
+
+### 启用套利策略（`.env`）
+
+```ini
+# 启用套利（默认关闭，与 btc_5min 可同时开启）
+ARB_ENABLED=true
+
+# 触发阈值（扣除 gas 后仍有利润才触发）
+ARB_MIN_MERGE_SPREAD=0.008   # YES_ask + NO_ask ≤ 0.992 时触发
+ARB_MIN_SPLIT_SPREAD=0.008   # YES_bid + NO_bid ≥ 1.008 时触发
+
+# 资金规模
+ARB_BASE_TRADE_USDC=50.0     # 单次套利基础规模
+ARB_MAX_TRADE_USDC=100.0     # 单次套利上限
+
+# 风控
+ARB_COOLDOWN_SECONDS=3.0     # 两次套利之间的冷却期（等待链上确认）
+ARB_LIQUIDITY_MIN_SIZE=10.0  # 订单簿最小深度（shares），低于此跳过
+ARB_SLIPPAGE_TOLERANCE=0.002 # FOK 单价格容忍滑点（0.2 分）
+ARB_ESTIMATED_GAS_USDC=0.005 # Polygon gas 估算，用于净利润过滤
+```
+
+### 单边未成交风险
+
+套利使用 FOK 订单确保"全成交或取消"，但在极端情况下（双边 FOK 中仅一边成交），机器人会：
+
+1. 记录 `ERROR` 级日志，标明残留方向
+2. **不自动平仓**（避免在价格不利时损失扩大）
+3. 建议人工检查并通过 Polymarket 界面手动处理
+
+为降低此风险，建议将 `ARB_LIQUIDITY_MIN_SIZE` 设置为套利规模的 **2 倍以上**。
 
 ---
 
@@ -100,8 +210,7 @@ def _generate_signal(self, yes_data: MarketData, no_data: MarketData) -> Signal:
 
 | 表名 | 用途 |
 |---|---|
-| `orders` | 机器人尝试发出的每一笔订单 |
-| `trades` | 每次成交事件的明细 |
+| `orders` | 机器人尝试发出的每一笔订单（含套利单） |
 | `market_snapshots` | 历史委托簿快照（用于分析与回测） |
 | `audit_logs` | 所有机器人操作的不可变审计记录 |
 
@@ -114,11 +223,13 @@ def _generate_signal(self, yes_data: MarketData, no_data: MarketData) -> Signal:
 | `DRY_RUN=true` | 默认开启，跳过所有真实交易所调用 |
 | `MAX_ORDER_SIZE_USDC` | 单笔订单名义价值上限 |
 | `MAX_POSITION_SIZE_USDC` | 单方向总持仓上限 |
+| `ARB_COOLDOWN_SECONDS` | 套利链上 tx 冷却，防止 nonce 冲突 |
+| `ARB_LIQUIDITY_MIN_SIZE` | 套利流动性门槛，薄市场不进场 |
 | 审计追踪 | 每个操作（含失败、干跑跳过）均写入 PostgreSQL |
-| 优雅关闭 | 收到 SIGINT / SIGTERM 后干净停止 |
+| 优雅关闭 | 收到 SIGINT / SIGTERM 后干净停止，打印套利统计 |
 
 ---
 
-## 环境变量参考
+## 环境变量完整参考
 
 完整列表及说明见 [.env.example](.env.example)。

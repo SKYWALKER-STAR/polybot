@@ -186,3 +186,74 @@ class PolymarketClient:
         """Return portfolio value for the authenticated wallet."""
         value = await self.client.get_portfolio_value()
         return {"portfolio_value": str(value) if value is not None else None}
+
+    # ------------------------------------------------------------------ #
+    # CTF position lifecycle  (split / merge)
+    # ------------------------------------------------------------------ #
+
+    async def split_position(
+        self,
+        condition_id: str,
+        amount: float,
+    ) -> dict[str, Any]:
+        """
+        Split ``amount`` pUSD into an equal quantity of YES + NO outcome tokens.
+
+        Uses the official SDK ``split_position`` method which routes through
+        the Polymarket CTF Collateral Adapter so that the released tokens
+        are immediately usable on the CLOB.
+
+        Parameters
+        ----------
+        condition_id : str
+            Condition ID of the binary market.
+        amount : float
+            Human-readable pUSD amount to split (e.g. ``100.0`` → split $100).
+
+        Returns
+        -------
+        dict with ``transaction_hash`` on success, raises on failure.
+        """
+        handle = await self.client.split_position(
+            condition_id=condition_id,
+            amount=amount,
+        )
+        outcome = await handle.wait()
+        tx_hash = str(getattr(outcome, "transaction_hash", "") or "")
+        logger.info(
+            "split_position OK — condition=%s  amount=%.4f  tx=%s",
+            condition_id, amount, tx_hash,
+        )
+        return {"ok": True, "transaction_hash": tx_hash}
+
+    async def merge_positions(
+        self,
+        condition_id: str,
+        amount: float | str = "max",
+    ) -> dict[str, Any]:
+        """
+        Merge equal quantities of YES + NO tokens back into pUSD.
+
+        Parameters
+        ----------
+        condition_id : str
+            Condition ID of the binary market.
+        amount : float | str
+            Number of complete sets to merge, or ``"max"`` to merge everything.
+
+        Returns
+        -------
+        dict with ``transaction_hash`` on success, raises on failure.
+        """
+        merge_amount: Any = amount if amount == "max" else float(amount)
+        handle = await self.client.merge_positions(
+            condition_id=condition_id,
+            amount=merge_amount,
+        )
+        outcome = await handle.wait()
+        tx_hash = str(getattr(outcome, "transaction_hash", "") or "")
+        logger.info(
+            "merge_positions OK — condition=%s  amount=%s  tx=%s",
+            condition_id, amount, tx_hash,
+        )
+        return {"ok": True, "transaction_hash": tx_hash}
