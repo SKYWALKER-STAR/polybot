@@ -361,10 +361,12 @@ class BtcArbStrategy:
                 else:
                     logger.info(
                         "[%s] Merge 价差满足 (sum=%.4f) 但流动性不足 "
-            "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
-            self.name, ask_sum,
-            yes_data.outcome, yes_ask_depth,
-            no_data.outcome,  no_ask_depth,
+                        "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
+                        self.name, ask_sum,
+                        yes_data.outcome, yes_ask_depth,
+                        no_data.outcome,  no_ask_depth,
+                        self._cfg.liquidity_min_size,
+                    )
 
         # ---- Split 套利 -------------------------------------------
         if yes_bid is not None and no_bid is not None:
@@ -407,10 +409,12 @@ class BtcArbStrategy:
                 else:
                     logger.info(
                         "[%s] Split 价差满足 (sum=%.4f) 但流动性不足 "
-            "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
-            self.name, bid_sum,
-            yes_data.outcome, yes_bid_depth,
-            no_data.outcome,  no_bid_depth,
+                        "(%s_depth=%.1f  %s_depth=%.1f  需=%.1f)",
+                        self.name, bid_sum,
+                        yes_data.outcome, yes_bid_depth,
+                        no_data.outcome,  no_bid_depth,
+                        self._cfg.liquidity_min_size,
+                    )
 
         logger.info(
             "[%s] 无套利机会 — %s ask=%.4f bid=%.4f | %s ask=%.4f bid=%.4f | "
