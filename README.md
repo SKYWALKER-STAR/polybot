@@ -23,10 +23,10 @@ BTC_5MIN_ENABLED=false
 ARB_ENABLED=true
 ARB_OBSERVE_MODE=true
 
-# 监听多选市场套利机会（观察模式，不下单）
+# 同时监听多个市场（逗号分隔）
+ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,republican-presidential-nominee-2028
 ELECTION_ARB_ENABLED=true
 ELECTION_ARB_OBSERVE_MODE=true
-ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
 
 # 同时运行全部三套策略
 BTC_5MIN_ENABLED=true
@@ -227,22 +227,24 @@ ARB_ESTIMATED_GAS_USDC=0.005 # Polygon gas 估算，用于净利润过滤
 
 此外，策略还会在每 tick 记录**所有候选结果的 YES ask 价格之和**，方便观察跨结果定价偏差。
 
-### 切换监听的市场
+### 切换 / 增加监听的市场
 
-修改 `.env` 中的一行即可指向任意 Polymarket 多选事件：
+`.env` 中用逗号分隔多个 slug，每个市场独立运行一套策略实例：
 
 ```ini
 # slug = 事件 URL 最后一段路径，例如：
 # https://polymarket.com/event/democratic-presidential-nominee-2028
 #                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
 
-# 也可换成其他多选市场，例如：
-# ELECTION_MARKET_SLUG=2026-fifa-world-cup-winner
-# ELECTION_MARKET_SLUG=oscar-best-picture-2027
+# 单个市场
+ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028
+
+# 同时监听多个市场（逗号分隔）
+# ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,republican-presidential-nominee-2028
+# ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,oscar-best-picture-2027,2026-fifa-world-cup-winner
 ```
 
-机器人启动时会自动通过 Gamma API 解析该事件下所有候选结果及其 token，无需手动填写 token ID。
+机器人启动时会自动通过 Gamma API 解析每个事件下的所有候选结果及其 token，无需手动填写 token ID。
 
 ### 配置参数（`.env`）
 

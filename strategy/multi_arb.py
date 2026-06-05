@@ -29,9 +29,11 @@ Polymarket 多选事件（如大选、颁奖礼）中，每个候选结果对应
 ----------------
 在 .env 中设置（也是唯一需要修改的地方）：
 
-    ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
+    ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028
     ELECTION_ARB_ENABLED=true
     ELECTION_ARB_OBSERVE_MODE=true   # 建议先用观察模式验证
+    # 同时监听多个市场：
+    # ELECTION_MARKET_SLUGS=slug1,slug2,slug3
 
 默认行为
 --------

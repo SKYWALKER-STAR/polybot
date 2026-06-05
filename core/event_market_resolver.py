@@ -20,9 +20,11 @@ conditionId 和 clobTokenIds。
 
 选择监听的市场
 --------------
-通过环境变量 ``ELECTION_MARKET_SLUG`` 指定事件 slug，例如：
+通过环境变量 ``ELECTION_MARKET_SLUGS`` 指定事件 slug（逗号分隔，支持多个），例如：
 
-    ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
+    ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028
+    # 或同时监听多个：
+    ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,republican-presidential-nominee-2028
 
 slug 即 Polymarket 事件 URL 路径中最后一段，例如：
     https://polymarket.com/event/democratic-presidential-nominee-2028

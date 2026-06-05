@@ -161,14 +161,23 @@ class Settings(BaseSettings):
     # 观察模式：仅打印套利机会，不执行任何交易。建议首次启用时保持 True。
     election_arb_observe_mode: bool = Field(default=True)
 
-    # 要监听的 Polymarket 事件 slug，即事件 URL 最后一段路径，例如：
+    # 要监听的 Polymarket 事件 slug 列表（逗号分隔），即事件 URL 最后一段路径，例如：
     #   https://polymarket.com/event/democratic-presidential-nominee-2028
     #                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    # 修改此值即可切换监听的多选市场。
-    election_market_slug: str = Field(
-        default="democratic-presidential-nominee-2028",
-        description="Polymarket event slug for multi-choice market monitoring",
+    # 支持同时监听多个市场，逗号分隔即可，例如：
+    #   ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,oscar-best-picture-2027
+    election_market_slugs: list[str] = Field(
+        default=["democratic-presidential-nominee-2028"],
+        description="Comma-separated Polymarket event slugs for multi-choice market monitoring",
     )
+
+    @field_validator("election_market_slugs", mode="before")
+    @classmethod
+    def _parse_slugs(cls, v: object) -> list[str]:
+        """Accept both a JSON list and a plain comma-separated string."""
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v  # type: ignore[return-value]
 
     # Merge 套利触发阈值：YES_ask + NO_ask ≤ 1 - min_merge_spread
     election_arb_min_merge_spread: float = Field(default=0.005, gt=0, lt=1)

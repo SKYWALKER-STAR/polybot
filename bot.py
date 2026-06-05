@@ -91,10 +91,11 @@ class PolybBot:
         if settings.arb_enabled:
             active.append("btc_arb" + ("[观察]" if settings.arb_observe_mode else ""))
         if settings.election_arb_enabled:
-            active.append(
-                f"multi_arb:{settings.election_market_slug}"
-                + ("[观察]" if settings.election_arb_observe_mode else "")
-            )
+            for _slug in settings.election_market_slugs:
+                active.append(
+                    f"multi_arb:{_slug}"
+                    + ("[观察]" if settings.election_arb_observe_mode else "")
+                )
         logger.info(
             "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  active_strategies=%s",
             settings.dry_run,
@@ -169,26 +170,11 @@ class PolybBot:
         else:
             logger.info("套利策略未启用（arb_enabled=False）")
 
-        # --- 多选市场套利策略（可选）--------------------------------
-        self._election_data: Optional[EventMarketDataService] = None
-        self._election_arb: Optional[MultiArbStrategy] = None
+        # --- 多选市场套利策略（可选，支持多个市场同时监听）-----------
+        # 每个 slug 对应独立的 Resolver / DataService / Strategy 实例
+        # list[tuple[EventMarketDataService, MultiArbStrategy]]
+        self._election_components: list[tuple[EventMarketDataService, MultiArbStrategy]] = []
         if settings.election_arb_enabled:
-            election_resolver = EventMarketResolver(
-                event_slug=settings.election_market_slug,
-                cache_ttl=300.0,
-            )
-            self._election_data = EventMarketDataService(
-                resolver=election_resolver,
-                ws_feed=self._ws_feed,
-            )
-            # 立即订阅所有候选结果的 token（确保 WS 在第一个 tick 前已收到快照）
-            try:
-                await self._election_data.ensure_subscribed()
-            except Exception as exc:
-                logger.warning(
-                    "多选市场 token 订阅失败（%s），将在首个 tick 时重试: %s",
-                    settings.election_market_slug, exc,
-                )
             election_arb_config = MultiArbConfig(
                 min_merge_spread=settings.election_arb_min_merge_spread,
                 min_split_spread=settings.election_arb_min_split_spread,
@@ -200,15 +186,30 @@ class PolybBot:
                 estimated_gas_usdc=settings.election_arb_estimated_gas_usdc,
                 observe_mode=settings.election_arb_observe_mode,
             )
-            self._election_arb = MultiArbStrategy(
-                event_slug=settings.election_market_slug,
-                order_manager=self._order_manager,
-                config=election_arb_config,
-            )
-            self._election_arb.on_start()
+            for slug in settings.election_market_slugs:
+                e_resolver = EventMarketResolver(event_slug=slug, cache_ttl=300.0)
+                e_data = EventMarketDataService(
+                    resolver=e_resolver,
+                    ws_feed=self._ws_feed,
+                )
+                try:
+                    await e_data.ensure_subscribed()
+                except Exception as exc:
+                    logger.warning(
+                        "多选市场 token 订阅失败（%s），将在首个 tick 时重试: %s",
+                        slug, exc,
+                    )
+                e_arb = MultiArbStrategy(
+                    event_slug=slug,
+                    order_manager=self._order_manager,
+                    config=election_arb_config,
+                )
+                e_arb.on_start()
+                self._election_components.append((e_data, e_arb))
             logger.info(
-                "多选市场套利策略已启用 (multi_arb:%s)",
-                settings.election_market_slug,
+                "多选市场套利策略已启用，共 %d 个市场: %s",
+                len(self._election_components),
+                ", ".join(settings.election_market_slugs),
             )
         else:
             logger.info("多选市场套利策略未启用（election_arb_enabled=False）")
@@ -248,8 +249,8 @@ class PolybBot:
                 self._strategy.on_stop()
             if self._arb_strategy is not None:
                 self._arb_strategy.on_stop()
-            if self._election_arb is not None:
-                self._election_arb.on_stop()
+            for _, e_arb in self._election_components:
+                e_arb.on_stop()
             self._audit.bot_stop(
                 details={"stopped_at": datetime.now(timezone.utc).isoformat()}
             )
@@ -323,16 +324,13 @@ class PolybBot:
             except Exception as exc:
                 logger.exception("[btc_arb] on_tick 异常: %s", exc)
 
-        # 2b. 多选市场套利 tick
-        if self._election_arb is not None and self._election_data is not None:
+        # 2b. 多选市场套利 tick（每个市场独立运行）
+        for e_data, e_arb in self._election_components:
             try:
-                outcomes = await self._election_data.fetch()
-                await self._election_arb.on_tick(outcomes)
+                outcomes = await e_data.fetch()
+                await e_arb.on_tick(outcomes)
             except Exception as exc:
-                logger.exception(
-                    "[multi_arb:%s] on_tick 异常: %s",
-                    settings.election_market_slug, exc,
-                )
+                logger.exception("[%s] on_tick 异常: %s", e_arb.name, exc)
 
         # 2. 止损 / 止盈检查（在策略信号之前，优先清除局面）
         if self._strategy is not None and settings.strategy_stop_loss_pct > 0:
