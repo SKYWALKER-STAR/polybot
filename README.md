@@ -1,13 +1,14 @@
 # Polybot — Polymarket 自动交易机器人
 
-面向 Polymarket 的自动化交易框架，针对 **BTC 5分钟涨跌** 二元预测市场，内置两套策略：
+面向 Polymarket 的自动化交易框架，支持 **BTC 5分钟涨跌**二元市场与**多选事件市场**（大选、颁奖礼等），内置三套策略：
 
 | 策略 | 文件 | 说明 |
 |---|---|---|
 | `btc_5min` | [strategy/btc_5min.py](strategy/btc_5min.py) | 临近结算时押注涨/跌方向 |
-| `btc_arb` | [strategy/btc_arb.py](strategy/btc_arb.py) | **YES+NO 价差无风险套利**（Split/Merge） |
+| `btc_arb` | [strategy/btc_arb.py](strategy/btc_arb.py) | BTC 5min YES+NO 价差无风险套利（Split/Merge） |
+| `multi_arb` | [strategy/multi_arb.py](strategy/multi_arb.py) | **多选市场套利监听**（任意 Polymarket 多选事件） |
 
-两套策略可**同时运行**，互不干扰；也可通过 `.env` 单独开启任意一套。
+三套策略可**同时运行**，互不干扰；也可通过 `.env` 单独开启任意组合。
 
 ### 策略开关速查
 
@@ -15,18 +16,25 @@
 # 仅运行方向性策略
 BTC_5MIN_ENABLED=true
 ARB_ENABLED=false
+ELECTION_ARB_ENABLED=false
 
-# 仅运行套利策略（上线前建议先开观察模式）
+# 仅运行 BTC 套利策略（先开观察模式验证）
 BTC_5MIN_ENABLED=false
 ARB_ENABLED=true
-ARB_OBSERVE_MODE=true   # 改为 false 开始真实套利
+ARB_OBSERVE_MODE=true
 
-# 同时运行两套策略
+# 监听多选市场套利机会（观察模式，不下单）
+ELECTION_ARB_ENABLED=true
+ELECTION_ARB_OBSERVE_MODE=true
+ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
+
+# 同时运行全部三套策略
 BTC_5MIN_ENABLED=true
 ARB_ENABLED=true
+ELECTION_ARB_ENABLED=true
 ```
 
-> 两项均为 `false` 时，bot 启动会报错并退出，防止空跑。
+> 三项均为 `false` 时，bot 启动会报错并退出，防止空跑。
 
 ---
 
@@ -35,24 +43,26 @@ ARB_ENABLED=true
 ```
 polybot/
 ├── config/
-│   └── settings.py          # 类型化配置，从 .env 文件加载
+│   └── settings.py               # 类型化配置，从 .env 文件加载
 ├── core/
-│   ├── client.py            # Polymarket CLOB API 封装（含 split/merge）
-│   ├── market_data.py       # 行情查询 + 快照持久化
-│   ├── market_resolver.py   # 自动跟踪下一个 5min 市场
-│   ├── order_manager.py     # 下单、取消订单、风控检查
-│   ├── position_tracker.py  # 持仓跟踪（止损/止盈使用）
-│   └── ws_market_feed.py    # WebSocket 毫秒级行情订阅
+│   ├── client.py                 # Polymarket CLOB API 封装（含 split/merge）
+│   ├── event_market_resolver.py  # 多选事件 Resolver + DataService（新增）
+│   ├── market_data.py            # 行情查询 + 快照持久化
+│   ├── market_resolver.py        # 自动跟踪下一个 5min 市场
+│   ├── order_manager.py          # 下单、取消订单、风控检查
+│   ├── position_tracker.py       # 持仓跟踪（止损/止盈使用）
+│   └── ws_market_feed.py         # WebSocket 毫秒级行情订阅
 ├── strategy/
-│   ├── base.py              # 抽象策略基类（接口定义）
-│   ├── btc_5min.py          # BTC 5分钟方向性策略
-│   └── btc_arb.py           # YES/NO 价差无风险套利策略 ← 新增
+│   ├── base.py                   # 抽象策略基类（接口定义）
+│   ├── btc_5min.py               # BTC 5分钟方向性策略
+│   ├── btc_arb.py                # BTC YES/NO 价差无风险套利策略
+│   └── multi_arb.py              # 多选市场套利策略（新增）
 ├── database/
-│   ├── connection.py        # SQLAlchemy 引擎与会话工厂
-│   └── models.py            # ORM 模型：orders / market_snapshots / audit_logs
+│   ├── connection.py             # SQLAlchemy 引擎与会话工厂
+│   └── models.py                 # ORM 模型：orders / market_snapshots / audit_logs
 ├── audit/
-│   └── logger.py            # 操作审计，全量写入 PostgreSQL
-├── bot.py                   # 程序入口与主循环
+│   └── logger.py                 # 操作审计，全量写入 PostgreSQL
+├── bot.py                        # 程序入口与主循环
 ├── requirements.txt
 └── .env.example
 ```
@@ -206,6 +216,66 @@ ARB_ESTIMATED_GAS_USDC=0.005 # Polygon gas 估算，用于净利润过滤
 
 ---
 
+## 策略三：多选市场套利监听（multi_arb）
+
+**原理**：Polymarket 多选事件（如大选、颁奖礼）中，每个候选结果对应一个独立的 **YES/NO 二元子市场**。与 BTC 5min 市场完全相同，每个子市场都支持 YES+NO merge 成 $1 的操作，因此可对每个结果独立检测 Merge / Split 套利机会：
+
+| 场景 | 条件 | 操作 |
+|---|---|---|
+| **Merge 套利** | `YES_ask + NO_ask < $1` | 同时买入双边 → merge |
+| **Split 套利** | `YES_bid + NO_bid > $1` | split $1 → 同时卖出双边 |
+
+此外，策略还会在每 tick 记录**所有候选结果的 YES ask 价格之和**，方便观察跨结果定价偏差。
+
+### 切换监听的市场
+
+修改 `.env` 中的一行即可指向任意 Polymarket 多选事件：
+
+```ini
+# slug = 事件 URL 最后一段路径，例如：
+# https://polymarket.com/event/democratic-presidential-nominee-2028
+#                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ELECTION_MARKET_SLUG=democratic-presidential-nominee-2028
+
+# 也可换成其他多选市场，例如：
+# ELECTION_MARKET_SLUG=2026-fifa-world-cup-winner
+# ELECTION_MARKET_SLUG=oscar-best-picture-2027
+```
+
+机器人启动时会自动通过 Gamma API 解析该事件下所有候选结果及其 token，无需手动填写 token ID。
+
+### 配置参数（`.env`）
+
+```ini
+ELECTION_ARB_ENABLED=true
+ELECTION_ARB_OBSERVE_MODE=true      # true = 仅打印，不下单（建议首次启用时保持）
+
+ELECTION_ARB_MIN_MERGE_SPREAD=0.005 # YES_ask + NO_ask ≤ 0.995 时触发
+ELECTION_ARB_MIN_SPLIT_SPREAD=0.005 # YES_bid + NO_bid ≥ 1.005 时触发
+
+ELECTION_ARB_BASE_TRADE_USDC=20.0   # 单次套利基础规模
+ELECTION_ARB_MAX_TRADE_USDC=100.0   # 单次套利上限
+ELECTION_ARB_COOLDOWN_SECONDS=5.0   # 两次套利之间的冷却期
+ELECTION_ARB_LIQUIDITY_MIN_SIZE=5.0 # 订单簿最小深度（shares）
+```
+
+### 日志过滤
+
+所有多选市场日志均以 `[multi_arb:{slug}][候选人名]` 为前缀，可精确过滤：
+
+```bash
+# 查看所有多选市场套利机会
+grep "multi_arb:" logs/polybot.log
+
+# 查看特定市场的行情日志
+grep "multi_arb:democratic-presidential-nominee-2028" logs/polybot.log
+
+# 仅看发现套利机会的行
+grep "★ 套利机会 ★" logs/polybot.log
+```
+
+---
+
 ## 数据库表说明
 
 | 表名 | 用途 |
@@ -223,10 +293,12 @@ ARB_ESTIMATED_GAS_USDC=0.005 # Polygon gas 估算，用于净利润过滤
 | `DRY_RUN=true` | 默认开启，跳过所有真实交易所调用 |
 | `MAX_ORDER_SIZE_USDC` | 单笔订单名义价值上限 |
 | `MAX_POSITION_SIZE_USDC` | 单方向总持仓上限 |
-| `ARB_COOLDOWN_SECONDS` | 套利链上 tx 冷却，防止 nonce 冲突 |
-| `ARB_LIQUIDITY_MIN_SIZE` | 套利流动性门槛，薄市场不进场 |
+| `ARB_COOLDOWN_SECONDS` | BTC 套利链上 tx 冷却，防止 nonce 冲突 |
+| `ARB_LIQUIDITY_MIN_SIZE` | BTC 套利流动性门槛，薄市场不进场 |
+| `ELECTION_ARB_OBSERVE_MODE=true` | 多选市场仅打印套利机会，不执行任何交易（默认开启） |
+| `ELECTION_ARB_LIQUIDITY_MIN_SIZE` | 多选市场流动性门槛，低于此跳过 |
 | 审计追踪 | 每个操作（含失败、干跑跳过）均写入 PostgreSQL |
-| 优雅关闭 | 收到 SIGINT / SIGTERM 后干净停止，打印套利统计 |
+| 优雅关闭 | 收到 SIGINT / SIGTERM 后干净停止，打印各策略统计 |
 
 ---
 

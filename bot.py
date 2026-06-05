@@ -26,6 +26,7 @@ from typing import Optional
 
 from config.settings import settings
 from core.client import PolymarketClient
+from core.event_market_resolver import EventMarketDataService, EventMarketResolver
 from core.market_data import MarketDataService
 from core.market_resolver import MarketResolver
 from core.order_manager import OrderManager
@@ -37,6 +38,7 @@ from database.models import AuditAction, AuditResult
 from strategy.base import BaseStrategy
 from strategy.btc_5min import Btc5MinStrategy, StrategyConfig
 from strategy.btc_arb import BtcArbStrategy, ArbConfig
+from strategy.multi_arb import MultiArbConfig, MultiArbStrategy
 
 # ------------------------------------------------------------------ #
 # Logging setup
@@ -88,6 +90,11 @@ class PolybBot:
             active.append(self._strategy.name)
         if settings.arb_enabled:
             active.append("btc_arb" + ("[观察]" if settings.arb_observe_mode else ""))
+        if settings.election_arb_enabled:
+            active.append(
+                f"multi_arb:{settings.election_market_slug}"
+                + ("[观察]" if settings.election_arb_observe_mode else "")
+            )
         logger.info(
             "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  active_strategies=%s",
             settings.dry_run,
@@ -162,6 +169,50 @@ class PolybBot:
         else:
             logger.info("套利策略未启用（arb_enabled=False）")
 
+        # --- 多选市场套利策略（可选）--------------------------------
+        self._election_data: Optional[EventMarketDataService] = None
+        self._election_arb: Optional[MultiArbStrategy] = None
+        if settings.election_arb_enabled:
+            election_resolver = EventMarketResolver(
+                event_slug=settings.election_market_slug,
+                cache_ttl=300.0,
+            )
+            self._election_data = EventMarketDataService(
+                resolver=election_resolver,
+                ws_feed=self._ws_feed,
+            )
+            # 立即订阅所有候选结果的 token（确保 WS 在第一个 tick 前已收到快照）
+            try:
+                await self._election_data.ensure_subscribed()
+            except Exception as exc:
+                logger.warning(
+                    "多选市场 token 订阅失败（%s），将在首个 tick 时重试: %s",
+                    settings.election_market_slug, exc,
+                )
+            election_arb_config = MultiArbConfig(
+                min_merge_spread=settings.election_arb_min_merge_spread,
+                min_split_spread=settings.election_arb_min_split_spread,
+                max_trade_usdc=settings.election_arb_max_trade_usdc,
+                base_trade_usdc=settings.election_arb_base_trade_usdc,
+                cooldown_seconds=settings.election_arb_cooldown_seconds,
+                liquidity_min_size=settings.election_arb_liquidity_min_size,
+                slippage_tolerance=settings.election_arb_slippage_tolerance,
+                estimated_gas_usdc=settings.election_arb_estimated_gas_usdc,
+                observe_mode=settings.election_arb_observe_mode,
+            )
+            self._election_arb = MultiArbStrategy(
+                event_slug=settings.election_market_slug,
+                order_manager=self._order_manager,
+                config=election_arb_config,
+            )
+            self._election_arb.on_start()
+            logger.info(
+                "多选市场套利策略已启用 (multi_arb:%s)",
+                settings.election_market_slug,
+            )
+        else:
+            logger.info("多选市场套利策略未启用（election_arb_enabled=False）")
+
         # --- signal handlers ----------------------------------------
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -197,6 +248,8 @@ class PolybBot:
                 self._strategy.on_stop()
             if self._arb_strategy is not None:
                 self._arb_strategy.on_stop()
+            if self._election_arb is not None:
+                self._election_arb.on_stop()
             self._audit.bot_stop(
                 details={"stopped_at": datetime.now(timezone.utc).isoformat()}
             )
@@ -269,6 +322,17 @@ class PolybBot:
                 await self._arb_strategy.on_tick(up_data, down_data)
             except Exception as exc:
                 logger.exception("[btc_arb] on_tick 异常: %s", exc)
+
+        # 2b. 多选市场套利 tick
+        if self._election_arb is not None and self._election_data is not None:
+            try:
+                outcomes = await self._election_data.fetch()
+                await self._election_arb.on_tick(outcomes)
+            except Exception as exc:
+                logger.exception(
+                    "[multi_arb:%s] on_tick 异常: %s",
+                    settings.election_market_slug, exc,
+                )
 
         # 2. 止损 / 止盈检查（在策略信号之前，优先清除局面）
         if self._strategy is not None and settings.strategy_stop_loss_pct > 0:
@@ -479,10 +543,10 @@ def _build_strategy() -> Optional[BaseStrategy]:
 if __name__ == "__main__":
     _setup_logging()
     strategy = _build_strategy()
-    if strategy is None and not settings.arb_enabled:
+    if strategy is None and not settings.arb_enabled and not settings.election_arb_enabled:
         logger.error(
-            "配置错误：btc_5min 和 btc_arb 策略均已关闭。"
-            "请在 .env 中至少启用一个策略（BTC_5MIN_ENABLED=true 或 ARB_ENABLED=true）。"
+            "配置错误：btc_5min、btc_arb 和 election_arb 策略均已关闭。"
+            "请在 .env 中至少启用一个策略。"
         )
         sys.exit(1)
     bot = PolybBot(strategy=strategy)

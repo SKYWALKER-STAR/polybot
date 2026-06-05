@@ -152,6 +152,49 @@ class Settings(BaseSettings):
     arb_estimated_gas_usdc: float = Field(default=0.005, ge=0)
 
     # ------------------------------------------------------------------ #
+    # Election / multi-choice market monitoring
+    # ------------------------------------------------------------------ #
+
+    # 是否启用多选市场套利监听（election_arb）
+    election_arb_enabled: bool = Field(default=False)
+
+    # 观察模式：仅打印套利机会，不执行任何交易。建议首次启用时保持 True。
+    election_arb_observe_mode: bool = Field(default=True)
+
+    # 要监听的 Polymarket 事件 slug，即事件 URL 最后一段路径，例如：
+    #   https://polymarket.com/event/democratic-presidential-nominee-2028
+    #                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    # 修改此值即可切换监听的多选市场。
+    election_market_slug: str = Field(
+        default="democratic-presidential-nominee-2028",
+        description="Polymarket event slug for multi-choice market monitoring",
+    )
+
+    # Merge 套利触发阈值：YES_ask + NO_ask ≤ 1 - min_merge_spread
+    election_arb_min_merge_spread: float = Field(default=0.005, gt=0, lt=1)
+
+    # Split 套利触发阈值：YES_bid + NO_bid ≥ 1 + min_split_spread
+    election_arb_min_split_spread: float = Field(default=0.005, gt=0, lt=1)
+
+    # 单次套利最大 USDC 规模
+    election_arb_max_trade_usdc: float = Field(default=100.0, gt=0)
+
+    # 单次套利基础 USDC 规模（受深度限制后可能更小）
+    election_arb_base_trade_usdc: float = Field(default=20.0, gt=0)
+
+    # 两次套利之间的冷却时间（秒）
+    election_arb_cooldown_seconds: float = Field(default=5.0, ge=0)
+
+    # 订单簿最小可用深度（shares）
+    election_arb_liquidity_min_size: float = Field(default=5.0, gt=0)
+
+    # FOK 买/卖单滑点容忍
+    election_arb_slippage_tolerance: float = Field(default=0.002, ge=0, lt=0.1)
+
+    # Gas 费用估算（USDC），用于净利润门槛过滤
+    election_arb_estimated_gas_usdc: float = Field(default=0.005, ge=0)
+
+    # ------------------------------------------------------------------ #
     # Logging
     # ------------------------------------------------------------------ #
     log_level: str = Field(default="INFO")
