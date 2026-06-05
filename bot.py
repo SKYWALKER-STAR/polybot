@@ -40,6 +40,12 @@ from strategy.btc_5min import Btc5MinStrategy, StrategyConfig
 from strategy.btc_arb import BtcArbStrategy, ArbConfig
 from strategy.multi_arb import MultiArbConfig, MultiArbStrategy
 
+
+def _parse_election_slugs() -> list[str]:
+    """将逗号分隔的 ELECTION_MARKET_SLUGS 字符串解析为列表。"""
+    return [s.strip() for s in settings.election_market_slugs.split(",") if s.strip()]
+
+
 # ------------------------------------------------------------------ #
 # Logging setup
 # ------------------------------------------------------------------ #
@@ -91,7 +97,7 @@ class PolybBot:
         if settings.arb_enabled:
             active.append("btc_arb" + ("[观察]" if settings.arb_observe_mode else ""))
         if settings.election_arb_enabled:
-            for _slug in settings.election_market_slugs:
+            for _slug in _parse_election_slugs():
                 active.append(
                     f"multi_arb:{_slug}"
                     + ("[观察]" if settings.election_arb_observe_mode else "")
@@ -186,7 +192,7 @@ class PolybBot:
                 estimated_gas_usdc=settings.election_arb_estimated_gas_usdc,
                 observe_mode=settings.election_arb_observe_mode,
             )
-            for slug in settings.election_market_slugs:
+            for slug in _parse_election_slugs():
                 e_resolver = EventMarketResolver(event_slug=slug, cache_ttl=300.0)
                 e_data = EventMarketDataService(
                     resolver=e_resolver,
@@ -209,7 +215,7 @@ class PolybBot:
             logger.info(
                 "多选市场套利策略已启用，共 %d 个市场: %s",
                 len(self._election_components),
-                ", ".join(settings.election_market_slugs),
+                ", ".join(_parse_election_slugs()),
             )
         else:
             logger.info("多选市场套利策略未启用（election_arb_enabled=False）")
