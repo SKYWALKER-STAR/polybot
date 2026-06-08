@@ -227,7 +227,8 @@ class MultiArbStrategy:
         ask_sum = sum(yes_asks)
         bid_sum = sum(yes_bids)
 
-        _log = logger.info if self._cfg.observe_mode else logger.debug
+        #_log = logger.info if self._cfg.observe_mode else logger.debug
+        _log = logger.info
         _log(
             "[%s] 跨结果价格 — "
             "YES ask之和=%.4f (偏离$1=%.4f)  "

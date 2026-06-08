@@ -229,7 +229,8 @@ class PolybBot:
             self._strategy.on_start()
         self._audit.bot_start(
             details={
-                "btc_5min_enabled": self._strategy is not None,
+                #"btc_5min_enabled": self._strategy is not None,
+                "btc_5min_enabled": settings.btc_5min_enabled,
                 "arb_enabled": settings.arb_enabled,
                 "arb_observe_mode": settings.arb_observe_mode,
                 "dry_run": settings.dry_run,
@@ -280,48 +281,49 @@ class PolybBot:
     # ------------------------------------------------------------------ #
 
     async def _tick(self) -> None:
-        # 1. Fetch market data
-        try:
-            up_data, down_data = await self._market_data.fetch()
-        except Exception as exc:
-            logger.error("Market data fetch failed: %s", exc)
+        # 1. BTC 5m 涨跌市场买卖策略
+        if settings.btc_5min_enabled:
+            try:
+                up_data, down_data = await self._market_data.fetch()
+            except Exception as exc:
+                logger.error("Market data fetch failed: %s", exc)
+                self._audit.record(
+                    action=AuditAction.MARKET_DATA_FETCH,
+                    result=AuditResult.FAILURE,
+                    error_message=str(exc),
+                )
+                return
+
+            # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
+            current_condition_id = up_data.condition_id
+            if self._last_condition_id and self._last_condition_id != current_condition_id:
+                logger.info(
+                    "市场已切换 %s → %s，开始撤销旧市场残留挂单 …",
+                    self._last_condition_id, current_condition_id,
+                )
+                try:
+                    cancelled = await self._order_manager.cancel_orders_for_condition(
+                        self._last_condition_id
+                    )
+                    logger.info("旧市场挂单已撤销 %d 笔", cancelled)
+                except Exception as exc:
+                    logger.warning("撤销旧市场挂单时出错: %s", exc)
+                # 市场切换时清空持仓记录（旧市场结算，持仓已关闭）
+                self._position_tracker.clear_all()
+            self._last_condition_id = current_condition_id
+
             self._audit.record(
                 action=AuditAction.MARKET_DATA_FETCH,
-                result=AuditResult.FAILURE,
-                error_message=str(exc),
+                result=AuditResult.SUCCESS,
+                details={
+                    "up_buy_price":    up_data.best_ask,    # 买入 UP 时支付的价格（最低 ask）
+                    "up_sell_price":   up_data.best_bid,    # 卖出 UP 时收到的价格（最高 bid）
+                    "up_spread":       up_data.spread,
+                    "down_buy_price":  down_data.best_ask,  # 买入 DOWN 时支付的价格（最低 ask）
+                    "down_sell_price": down_data.best_bid,  # 卖出 DOWN 时收到的价格（最高 bid）
+                    "down_spread":     down_data.spread,
+                },
             )
-            return
-
-        # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
-        current_condition_id = up_data.condition_id
-        if self._last_condition_id and self._last_condition_id != current_condition_id:
-            logger.info(
-                "市场已切换 %s → %s，开始撤销旧市场残留挂单 …",
-                self._last_condition_id, current_condition_id,
-            )
-            try:
-                cancelled = await self._order_manager.cancel_orders_for_condition(
-                    self._last_condition_id
-                )
-                logger.info("旧市场挂单已撤销 %d 笔", cancelled)
-            except Exception as exc:
-                logger.warning("撤销旧市场挂单时出错: %s", exc)
-            # 市场切换时清空持仓记录（旧市场结算，持仓已关闭）
-            self._position_tracker.clear_all()
-        self._last_condition_id = current_condition_id
-
-        self._audit.record(
-            action=AuditAction.MARKET_DATA_FETCH,
-            result=AuditResult.SUCCESS,
-            details={
-                "up_buy_price":    up_data.best_ask,    # 买入 UP 时支付的价格（最低 ask）
-                "up_sell_price":   up_data.best_bid,    # 卖出 UP 时收到的价格（最高 bid）
-                "up_spread":       up_data.spread,
-                "down_buy_price":  down_data.best_ask,  # 买入 DOWN 时支付的价格（最低 ask）
-                "down_sell_price": down_data.best_bid,  # 卖出 DOWN 时收到的价格（最高 bid）
-                "down_spread":     down_data.spread,
-            },
-        )
 
         # 2a. 套利策略 tick（高优先级，在普通策略之前执行）
         if self._arb_strategy is not None:
