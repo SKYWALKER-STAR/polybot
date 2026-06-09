@@ -239,7 +239,8 @@ class Btc5MinStrategy(BaseStrategy):
             )
             return Signal.NONE
 
-        lo = self._cfg.target_price - self._cfg.price_tolerance
+        #lo = self._cfg.target_price - self._cfg.price_tolerance
+        lo = self._cfg.target_price
         hi = self._cfg.target_price + self._cfg.price_tolerance
 
         logger.info(
