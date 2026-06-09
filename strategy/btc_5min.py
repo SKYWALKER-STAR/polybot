@@ -96,6 +96,9 @@ class Signal(str, Enum):
 class _StrategyState:
     # 上次下单时的市场 condition_id（用于避免同一周期重复入场）
     bet_condition_id: Optional[str] = None
+    
+    # 待重试的订单
+    pending_retries: list[OrderRequest] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ #
@@ -135,15 +138,19 @@ class Btc5MinStrategy(BaseStrategy):
             return []
 
         signal = self._generate_signal(up_data, down_data)
-        if signal == Signal.NONE:
-            return []
+        
+        # 优先处理重试订单
+        orders_to_submit = self._state.pending_retries
+        self._state.pending_retries = []
 
-        orders = self._build_orders(signal, up_data, down_data)
-        if orders:
-            # 标记本轮结算周期已入场，避免重复下单
-            self._state.bet_condition_id = up_data.condition_id
+        if signal != Signal.NONE:
+            new_orders = self._build_orders(signal, up_data, down_data)
+            if new_orders:
+                # 标记本轮结算周期已入场，避免重复下单
+                self._state.bet_condition_id = up_data.condition_id
+                orders_to_submit.extend(new_orders)
 
-        return orders
+        return orders_to_submit
 
     def on_order_result(self, request: OrderRequest, result: OrderResult) -> None:
         if result.success:
@@ -161,9 +168,10 @@ class Btc5MinStrategy(BaseStrategy):
             )
         else:
             logger.warning(
-                "[%s] 订单提交失败 — outcome=%s error=%s",
+                "[%s] 订单提交失败，将在下个 tick 重试 — outcome=%s error=%s",
                 self.name, request.outcome, result.error,
             )
+            self._state.pending_retries.append(request)
 
     def on_stop(self) -> None:
         logger.info("[%s] 策略停止。", self.name)
