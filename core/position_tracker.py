@@ -217,6 +217,75 @@ class PositionTracker:
         if count:
             logger.info("[PositionTracker] 清空所有持仓（共 %d 笔）", count)
 
+    def sync_from_exchange(
+        self,
+        condition_id: str,
+        outcome_to_token_id: dict[str, str],
+        positions: list[dict],
+    ) -> None:
+        """
+        用交易所官方持仓覆盖当前市场本地仓位（source of truth）。
+
+        仅同步传入 ``condition_id`` 对应市场，避免误删其他市场状态。
+        """
+        live_token_ids: set[str] = set()
+
+        for item in positions:
+            market_id = str(
+                item.get("market_id")
+                or item.get("condition_id")
+                or item.get("market")
+                or ""
+            )
+            if market_id != condition_id:
+                continue
+
+            outcome = _normalize_exchange_outcome(str(item.get("outcome") or ""))
+            token_id = outcome_to_token_id.get(outcome)
+            if not token_id:
+                continue
+
+            shares = _safe_float(item.get("size"))
+            if shares <= 0:
+                continue
+
+            value = _safe_float(item.get("value"))
+            existing = self._positions.get(token_id)
+            liquidating = existing.liquidating if existing is not None else False
+            opened_at = existing.opened_at if existing is not None else datetime.now(timezone.utc)
+            market_slug = existing.market_slug if existing is not None else ""
+
+            # 若本次 value 缺失，保留原成本，避免均价被错误归零。
+            cost_usdc = value if value > 0 else (existing.cost_usdc if existing is not None else 0.0)
+            avg_entry_price = cost_usdc / shares if cost_usdc > 0 and shares > 0 else 0.0
+
+            self._positions[token_id] = Position(
+                token_id=token_id,
+                outcome=outcome,
+                condition_id=condition_id,
+                market_slug=market_slug,
+                shares=shares,
+                cost_usdc=cost_usdc,
+                avg_entry_price=avg_entry_price,
+                opened_at=opened_at,
+                liquidating=liquidating,
+            )
+            live_token_ids.add(token_id)
+
+        stale_token_ids = [
+            token_id
+            for token_id, pos in self._positions.items()
+            if pos.condition_id == condition_id and token_id not in live_token_ids
+        ]
+        for token_id in stale_token_ids:
+            self._positions.pop(token_id, None)
+
+        logger.debug(
+            "[PositionTracker] 官方持仓同步完成 — condition=%s count=%d",
+            condition_id,
+            len(live_token_ids),
+        )
+
     # ------------------------------------------------------------------ #
     # Read path
     # ------------------------------------------------------------------ #
@@ -332,3 +401,21 @@ class PositionTracker:
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<PositionTracker positions={len(self._positions)}>"
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_exchange_outcome(value: str) -> str:
+    normalized = value.strip().upper()
+    mapping = {
+        "UP": "UP",
+        "DOWN": "DOWN",
+        "YES": "UP",
+        "NO": "DOWN",
+    }
+    return mapping.get(normalized, normalized)

@@ -325,6 +325,23 @@ class PolybBot:
                 },
             )
 
+            # 以官方持仓为准，纠正 FAK 部分成交等导致的本地仓位偏差
+            try:
+                exchange_positions = await self._client.get_positions()
+                self._position_tracker.sync_from_exchange(
+                    condition_id=current_condition_id,
+                    outcome_to_token_id={
+                        "UP": up_data.token_id,
+                        "DOWN": down_data.token_id,
+                    },
+                    positions=exchange_positions,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[PositionTracker] 官方持仓同步失败，继续使用本地缓存: %s",
+                    exc,
+                )
+
         # 2a. 套利策略 tick（高优先级，在普通策略之前执行）
         if self._arb_strategy is not None:
             try:
