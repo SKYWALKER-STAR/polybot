@@ -209,7 +209,13 @@ class Btc5MinStrategy(BaseStrategy):
             return Signal.NONE
 
         # 本周期已经入场过（以 condition_id 为去重键，字符串比较更可靠）
-        if self._state.bet_condition_id == up_data.condition_id:
+        if self._state.bet_condition_id != up_data.condition_id:
+            # 新周期开始，清空上一周期的重试订单
+            if self._state.pending_retries:
+                logger.info("[%s] 新周期开始，清空 %d 个上一周期的重试订单。",
+                            self.name, len(self._state.pending_retries))
+                self._state.pending_retries = []
+        elif self._state.bet_condition_id == up_data.condition_id:
             logger.debug("[%s] 本周期已入场，不重复下单。", self.name)
             return Signal.NONE
 
