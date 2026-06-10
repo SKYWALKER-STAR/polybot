@@ -337,7 +337,7 @@ class PolybBot:
                     },
                     positions=exchange_positions,
                 )
-                pprint(exchange_positions)
+                logger.debug(exchange_positions)
             except Exception as exc:
                 logger.warning(
                     "[PositionTracker] 官方持仓同步失败，继续使用本地缓存: %s",

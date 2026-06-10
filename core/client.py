@@ -179,7 +179,9 @@ class PolymarketClient:
                     "outcome": str(getattr(pos, "outcome", "")),
                     "size": float(pos.size) if getattr(pos, "size", None) is not None else None,
                     "avg_price": float(pos.avg_price) if getattr(pos, "avg_price", None) is not None else None,
-                    "unrealized_pnl": float(pos.unrealized_pnl) if getattr(pos, "unrealized_pnl", None) is not None else None,
+                    "cur_price": float(pos.cur_price) if getattr(pos, "cur_price", None) is not None else None,
+                    "initial_value": float(pos.initial_value) if getattr(pos, "initial_value", None) is not None else None,
+                    "current_value": float(pos.current_value) if getattr(pos, "current_value", None) is not None else None,
                     "percent_pnl": float(pos.percent_pnl) if getattr(pos, "percent_pnl", None) is not None else None,
                 })
                 logger.debug(pos)

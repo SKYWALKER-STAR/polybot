@@ -249,7 +249,7 @@ class PositionTracker:
             if shares <= 0:
                 continue
 
-            value = _safe_float(item.get("value"))
+            value = _safe_float(item.get("current_value"))
             existing = self._positions.get(token_id)
             liquidating = existing.liquidating if existing is not None else False
             opened_at = existing.opened_at if existing is not None else datetime.now(timezone.utc)
