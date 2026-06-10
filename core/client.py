@@ -175,12 +175,14 @@ class PolymarketClient:
         async for page in self.client.list_positions(market="558934"):
             for pos in page.items:
                 results.append({
-                    "market_id": str(getattr(pos, "market_id", "")),
+                    "condition_id": str(getattr(pos, "condition_id", "")),
                     "outcome": str(getattr(pos, "outcome", "")),
                     "size": float(pos.size) if getattr(pos, "size", None) is not None else None,
-                    "value": float(pos.value) if getattr(pos, "value", None) is not None else None,
+                    "avg_price": float(pos.avg_price) if getattr(pos, "avg_price", None) is not None else None,
+                    "unrealized_pnl": float(pos.unrealized_pnl) if getattr(pos, "unrealized_pnl", None) is not None else None,
+                    "percent_pnl": float(pos.percent_pnl) if getattr(pos, "percent_pnl", None) is not None else None,
                 })
-                logger.info(pos)
+                logger.debug(pos)
         return results
 
     async def get_balance(self) -> dict[str, Any]:
