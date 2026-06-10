@@ -23,6 +23,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from pprint import pprint
 
 from config.settings import settings
 from core.client import PolymarketClient
@@ -336,6 +337,7 @@ class PolybBot:
                     },
                     positions=exchange_positions,
                 )
+                pprint(exchange_positions)
             except Exception as exc:
                 logger.warning(
                     "[PositionTracker] 官方持仓同步失败，继续使用本地缓存: %s",
