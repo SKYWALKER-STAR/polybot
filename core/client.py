@@ -180,6 +180,7 @@ class PolymarketClient:
                     "size": float(pos.size) if getattr(pos, "size", None) is not None else None,
                     "value": float(pos.value) if getattr(pos, "value", None) is not None else None,
                 })
+                logger.info(pos)
         return results
 
     async def get_balance(self) -> dict[str, Any]:
