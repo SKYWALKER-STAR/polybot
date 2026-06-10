@@ -249,14 +249,15 @@ class PositionTracker:
             if shares <= 0:
                 continue
 
-            value = _safe_float(item.get("current_value"))
+            initial_value = _safe_float(item.get("initial_value"))
+            current_value = _safe_float(item.get("current_value"))
             existing = self._positions.get(token_id)
             liquidating = existing.liquidating if existing is not None else False
             opened_at = existing.opened_at if existing is not None else datetime.now(timezone.utc)
             market_slug = existing.market_slug if existing is not None else ""
 
             # 若本次 value 缺失，保留原成本，避免均价被错误归零。
-            cost_usdc = value if value > 0 else (existing.cost_usdc if existing is not None else 0.0)
+            cost_usdc = initial_value if initial_value > 0 else (existing.cost_usdc if existing is not None else 0.0)
             avg_entry_price = cost_usdc / shares if cost_usdc > 0 and shares > 0 else 0.0
 
             self._positions[token_id] = Position(
