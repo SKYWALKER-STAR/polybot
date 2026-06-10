@@ -172,7 +172,7 @@ class PolymarketClient:
     async def get_positions(self) -> list[dict[str, Any]]:
         """Return current token positions for the authenticated wallet."""
         results: list[dict[str, Any]] = []
-        async for page in self.client.list_positions():
+        async for page in self.client.list_positions(market="558934"):
             for pos in page.items:
                 results.append({
                     "market_id": str(getattr(pos, "market_id", "")),
