@@ -31,6 +31,7 @@ from core.event_market_resolver import EventMarketDataService, EventMarketResolv
 from core.market_data import MarketDataService
 from core.market_resolver import MarketResolver
 from core.order_manager import OrderManager
+from core.order_book import OrderBookService
 from core.position_tracker import PositionTracker
 from core.ws_market_feed import WsMarketFeed
 from audit.logger import AuditLogger
@@ -150,6 +151,7 @@ class PolybBot:
             client=self._client,
             audit_logger=self._audit,
         )
+        self._order_book = OrderBookService(self._market_data)
         self._position_tracker = PositionTracker()
         self._last_condition_id: str = ""  # 用于检测市场切换
 
@@ -286,6 +288,11 @@ class PolybBot:
         if settings.btc_5min_enabled:
             try:
                 up_data, down_data = await self._market_data.fetch()
+                order_book_result = await self._order_book.analyze(
+                    token_id=up_data.token_id,
+                    outcome="UP",
+                    slippage_notional=settings.strategy_slippage_usdc,
+                )
             except Exception as exc:
                 logger.error("Market data fetch failed: %s", exc)
                 self._audit.record(
