@@ -49,6 +49,7 @@ polybot/
 │   ├── event_market_resolver.py  # 多选事件 Resolver + DataService（新增）
 │   ├── market_data.py            # 行情查询 + 快照持久化
 │   ├── market_resolver.py        # 自动跟踪下一个 5min 市场
+│   ├── order_book.py             # 通用订单簿获取与指标分析
 │   ├── order_manager.py          # 下单、取消订单、风控检查
 │   ├── position_tracker.py       # 持仓跟踪（止损/止盈使用）
 │   └── ws_market_feed.py         # WebSocket 毫秒级行情订阅
@@ -279,6 +280,87 @@ grep "★ 套利机会 ★" logs/polybot.log
 ---
 
 ## 数据库表说明
+
+## 通用订单簿分析
+
+`core/order_book.py` 现在提供了可复用的 `OrderBookService`。它复用现有 `MarketDataService` 的 HTTP / WebSocket 取数能力，对任意 token 统一输出：
+
+- 买卖价差 `bid_ask_spread`
+- 买盘深度 `bid_depth`
+- 卖盘深度 `ask_depth`
+- 买卖深度比 `depth_ratio`
+- 买入 / 卖出滑点 `buy_slippage` / `sell_slippage`
+
+### 用法示例：分析当前 BTC 5min 市场
+
+```python
+from core.client import PolymarketClient
+from core.market_data import MarketDataService
+from core.market_resolver import MarketResolver
+from core.order_book import OrderBookService
+
+client = PolymarketClient()
+await client.connect()
+
+resolver = MarketResolver(initial_timestamp=1780073700)
+market_data_service = MarketDataService(client=client, resolver=resolver)
+order_book_service = OrderBookService(market_data_service)
+
+market = await resolver.get_active_market()
+report = await order_book_service.analyze_token(
+  market.up_token_id,
+  outcome="UP",
+  condition_id=market.condition_id,
+  market_slug=market.slug,
+  market_end_time=market.end_time,
+  gamma_price=market.up_price,
+  slippage_notional=50.0,
+)
+
+print(report.metrics.bid_ask_spread)
+print(report.metrics.bid_depth.notional)
+print(report.metrics.ask_depth.notional)
+print(report.metrics.depth_ratio)
+print(report.metrics.buy_slippage.slippage)
+```
+
+### 用法示例：灵活选择多选事件中的目标市场
+
+```python
+from core.client import PolymarketClient
+from core.event_market_resolver import EventMarketResolver
+from core.market_data import MarketDataService
+from core.market_resolver import MarketResolver
+from core.order_book import OrderBookService
+
+client = PolymarketClient()
+await client.connect()
+
+market_data_service = MarketDataService(
+  client=client,
+  resolver=MarketResolver(initial_timestamp=1780073700),
+)
+order_book_service = OrderBookService(market_data_service)
+
+event_resolver = EventMarketResolver("democratic-presidential-nominee-2028")
+event_info = await event_resolver.get_market_info()
+target_market = next(m for m in event_info.markets if m.title == "Kamala Harris")
+
+report = await order_book_service.analyze_token(
+  target_market.yes_token_id,
+  outcome="YES",
+  condition_id=target_market.condition_id,
+  market_slug=event_info.event_slug,
+  gamma_price=target_market.yes_price,
+  slippage_notional=25.0,
+  prefer_ws=False,
+)
+
+print(report.market_data.best_bid, report.market_data.best_ask)
+print(report.metrics.sell_slippage.slippage)
+```
+
+如果你已经拿到 token_id，也可以直接构造 `OrderBookTarget`，再用 `analyze_target()` / `analyze_targets()` 批量分析多个目标市场。
 
 | 表名 | 用途 |
 |---|---|

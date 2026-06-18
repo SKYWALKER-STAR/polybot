@@ -135,18 +135,20 @@ class MarketDataService:
         market_info = await self._sync_market()
         market_end_time = market_info.end_time
 
-        # --- WebSocket fast path ---
-        if self._ws_feed is not None and self._ws_feed.is_ready():
-            up_data   = self._build_from_ws(self.up_token_id,   "UP",   market_end_time)
-            down_data = self._build_from_ws(self.down_token_id, "DOWN", market_end_time)
-        else:
-            # --- HTTP fallback (also used before WS feed is ready) ---
-            up_data   = await self._fetch_token(self.up_token_id,   "UP",   market_end_time)
-            down_data = await self._fetch_token(self.down_token_id, "DOWN", market_end_time)
-
-        # 注入 Gamma API 提供的市场概率价格
-        up_data.gamma_price   = market_info.up_price
-        down_data.gamma_price = market_info.down_price
+        up_data = await self.fetch_token_book(
+            self.up_token_id,
+            outcome="UP",
+            condition_id=market_info.condition_id,
+            market_end_time=market_end_time,
+            gamma_price=market_info.up_price,
+        )
+        down_data = await self.fetch_token_book(
+            self.down_token_id,
+            outcome="DOWN",
+            condition_id=market_info.condition_id,
+            market_end_time=market_end_time,
+            gamma_price=market_info.down_price,
+        )
 
         if self.persist_snapshots:
             self._save_snapshots(up_data, down_data)
@@ -161,14 +163,54 @@ class MarketDataService:
 
     async def fetch_up(self) -> MarketData:
         info = await self._sync_market()
-        data = await self._fetch_token(self.up_token_id, "UP", info.end_time)
-        data.gamma_price = info.up_price
-        return data
+        return await self.fetch_token_book(
+            self.up_token_id,
+            outcome="UP",
+            condition_id=info.condition_id,
+            market_end_time=info.end_time,
+            gamma_price=info.up_price,
+        )
 
     async def fetch_down(self) -> MarketData:
         info = await self._sync_market()
-        data = await self._fetch_token(self.down_token_id, "DOWN", info.end_time)
-        data.gamma_price = info.down_price
+        return await self.fetch_token_book(
+            self.down_token_id,
+            outcome="DOWN",
+            condition_id=info.condition_id,
+            market_end_time=info.end_time,
+            gamma_price=info.down_price,
+        )
+
+    async def fetch_token_book(
+        self,
+        token_id: str,
+        outcome: str,
+        *,
+        condition_id: str = "",
+        market_end_time: Optional[datetime] = None,
+        gamma_price: Optional[float] = None,
+        prefer_ws: bool = True,
+    ) -> MarketData:
+        if prefer_ws and self._ws_feed is not None:
+            await self._ws_feed.subscribe_tokens(token_id)
+            if self._ws_feed.is_ready():
+                data = self._build_from_ws(
+                    token_id=token_id,
+                    outcome=outcome,
+                    condition_id=condition_id,
+                    market_end_time=market_end_time,
+                )
+                if data.is_valid or data.bids or data.asks:
+                    data.gamma_price = gamma_price
+                    return data
+
+        data = await self._fetch_token(
+            token_id=token_id,
+            outcome=outcome,
+            condition_id=condition_id,
+            market_end_time=market_end_time,
+        )
+        data.gamma_price = gamma_price
         return data
 
     # ------------------------------------------------------------------ #
@@ -179,6 +221,7 @@ class MarketDataService:
         self,
         token_id: str,
         outcome: str,
+        condition_id: str = "",
         market_end_time: Optional[datetime] = None,
     ) -> MarketData:
         """Build a MarketData snapshot from the WsMarketFeed in-memory state."""
@@ -188,11 +231,30 @@ class MarketDataService:
         best_bid: Optional[float] = None
         best_ask: Optional[float] = None
         last_trade_price: Optional[float] = None
+        bids: list[OrderBookLevel] = []
+        asks: list[OrderBookLevel] = []
 
         if state is not None:
             best_bid         = state.best_bid
             best_ask         = state.best_ask
             last_trade_price = state.last_trade_price
+            bids = [
+                OrderBookLevel(price=float(price), size=size)
+                for price, size in sorted(
+                    state.bid_levels.items(),
+                    key=lambda item: float(item[0]),
+                )
+                if size > 0
+            ]
+            asks = [
+                OrderBookLevel(price=float(price), size=size)
+                for price, size in sorted(
+                    state.ask_levels.items(),
+                    key=lambda item: float(item[0]),
+                    reverse=True,
+                )
+                if size > 0
+            ]
 
         midpoint: Optional[float] = None
         if best_bid is not None and best_ask is not None:
@@ -207,7 +269,7 @@ class MarketDataService:
             spread = best_ask - best_bid
 
         return MarketData(
-            condition_id=self.condition_id,
+            condition_id=condition_id or self.condition_id,
             token_id=token_id,
             outcome=outcome,
             best_bid=best_bid,
@@ -215,6 +277,8 @@ class MarketDataService:
             spread=spread,
             midpoint=midpoint,
             last_trade_price=last_trade_price,
+            bids=bids,
+            asks=asks,
             market_end_time=market_end_time,
         )
 
@@ -222,6 +286,7 @@ class MarketDataService:
         self,
         token_id: str,
         outcome: str,
+        condition_id: str = "",
         market_end_time: Optional[datetime] = None,
     ) -> MarketData:
         # Single request — all price fields are derived from the order book.
@@ -259,7 +324,7 @@ class MarketDataService:
         last_trade_price = _to_float(getattr(book, "last_trade_price", None))
 
         return MarketData(
-            condition_id=self.condition_id,
+            condition_id=condition_id or self.condition_id,
             token_id=token_id,
             outcome=outcome,
             best_bid=best_bid,
