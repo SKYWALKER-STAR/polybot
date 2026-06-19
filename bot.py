@@ -20,6 +20,7 @@ import asyncio
 import logging
 import signal
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,8 @@ from core.order_manager import OrderManager
 from core.order_book import OrderBookService
 from core.position_tracker import PositionTracker
 from core.ws_market_feed import WsMarketFeed
+from core.order_book import OrderBookAnalyzer
+from dashboard.order_book_dashboard import SharedState,OrderBookDashboard
 from audit.logger import AuditLogger
 from database.connection import init_db
 from database.models import AuditAction, AuditResult
@@ -82,12 +85,12 @@ class PolybBot:
     Orchestrates all components and runs the main polling loop.
     """
 
-    def __init__(self, strategy: Optional[BaseStrategy]) -> None:
+    def __init__(self, strategy: Optional[BaseStrategy],shared_state=None) -> None:
         self._strategy = strategy
         self._audit = AuditLogger()
         self._client = PolymarketClient()
         self._running = False
-
+        self._shared_state = shared_state
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -151,7 +154,6 @@ class PolybBot:
             client=self._client,
             audit_logger=self._audit,
         )
-        self._order_book = OrderBookService(self._market_data)
         self._position_tracker = PositionTracker()
         self._last_condition_id: str = ""  # 用于检测市场切换
 
@@ -224,9 +226,9 @@ class PolybBot:
             logger.info("多选市场套利策略未启用（election_arb_enabled=False）")
 
         # --- signal handlers ----------------------------------------
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-
+        #signal.signal(signal.SIGINT, self._handle_shutdown)
+        #signal.signal(signal.SIGTERM, self._handle_shutdown)
+    
         # --- strategy init ------------------------------------------
         if self._strategy is not None:
             self._strategy.on_start()
@@ -246,6 +248,8 @@ class PolybBot:
         self._running = True
         try:
             while self._running:
+                if self._shared_state.shutdown:
+                    break
                 try:
                     await self._tick()
                 except Exception as exc:
@@ -284,24 +288,21 @@ class PolybBot:
     # ------------------------------------------------------------------ #
 
     async def _tick(self) -> None:
+        logger.info("Hello world from _Tick")
+        try:
+            up_data, down_data = await self._market_data.fetch()
+        except Exception as exc:
+            logger.error("Market data fetch failed: %s", exc)
+            self._audit.record(
+                action=AuditAction.MARKET_DATA_FETCH,
+                result=AuditResult.FAILURE,
+                error_message=str(exc),
+            )
+            return
+        self._shared_state.metrics = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
+        logger.info("up_data metrics: %s", self._shared_state.metrics)
         # 1. BTC 5m 涨跌市场买卖策略
         if settings.btc_5min_enabled:
-            try:
-                up_data, down_data = await self._market_data.fetch()
-                order_book_result = await self._order_book.analyze(
-                    token_id=up_data.token_id,
-                    outcome="UP",
-                    slippage_notional=settings.strategy_slippage_usdc,
-                )
-            except Exception as exc:
-                logger.error("Market data fetch failed: %s", exc)
-                self._audit.record(
-                    action=AuditAction.MARKET_DATA_FETCH,
-                    result=AuditResult.FAILURE,
-                    error_message=str(exc),
-                )
-                return
-
             # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
             current_condition_id = up_data.condition_id
             if self._last_condition_id and self._last_condition_id != current_condition_id:
@@ -567,6 +568,17 @@ def _build_strategy() -> Optional[BaseStrategy]:
     )
     return Btc5MinStrategy(config=config)
 
+def run_bot(strategy,shared_state):
+    try:
+        bot = PolybBot(strategy=strategy, shared_state=shared_state)
+        asyncio.run(bot.start())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+def handle_shutdown(signum, frame):
+    print(f"Received signal: {signum}")
+    shared_state.shutdown = True
 
 # ------------------------------------------------------------------ #
 # Entry point
@@ -581,5 +593,16 @@ if __name__ == "__main__":
             "请在 .env 中至少启用一个策略。"
         )
         sys.exit(1)
-    bot = PolybBot(strategy=strategy)
-    asyncio.run(bot.start())
+    shared_state = SharedState()
+    
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    bot_thread = threading.Thread(
+        target=run_bot,
+        args=(strategy, shared_state),
+    )
+
+    bot_thread.start()
+    app = OrderBookDashboard(shared_state)
+    app.run()

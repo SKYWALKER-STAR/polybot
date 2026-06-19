@@ -45,6 +45,8 @@ class OrderBookMetrics:
     depth_ratio: Optional[float]
     buy_slippage: OrderBookSlippage
     sell_slippage: OrderBookSlippage
+    bids: Optional[list[OrderBookLevel]]
+    asks: Optional[list[OrderBookLevel]]
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,8 @@ class OrderBookAnalyzer:
                 best_price=market_data.best_bid,
                 requested_notional=slippage_notional,
             ),
+            bids=market_data.bids,
+            asks=market_data.asks,
         )
 
     @staticmethod

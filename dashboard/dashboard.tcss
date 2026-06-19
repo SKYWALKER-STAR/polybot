@@ -1,0 +1,15 @@
+Screen {
+    layout: vertical;
+}
+
+#main-grid {
+    height: 1fr;
+    layout: horizontal;
+}
+
+.panel {
+    width: 1fr;
+    margin: 1;
+    padding: 1 2;
+    border: round green;
+}

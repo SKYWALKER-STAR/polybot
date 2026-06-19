@@ -305,7 +305,7 @@ class MarketDataService:
             OrderBookLevel(price=float(lvl.price), size=float(lvl.size))
             for lvl in raw_asks
         ]
-
+        
         best_bid = bids[-1].price if bids else None   # bids 升序，最高买价在末尾
         best_ask = asks[-1].price if asks else None   # asks 降序，最低卖价在末尾
 

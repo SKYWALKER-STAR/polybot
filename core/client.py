@@ -45,6 +45,7 @@ class PolymarketClient:
         Initialise the authenticated SDK client.
         Must be called once before any other method.
         """
+        logger.info("before create client")
         self._client = await AsyncSecureClient.create(
             private_key=settings.private_key,
             wallet=settings.wallet_address or None,
