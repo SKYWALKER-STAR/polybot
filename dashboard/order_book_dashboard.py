@@ -15,16 +15,26 @@ def depth_bar(value, max_value=100000, width=25):
 # Widgets
 # =========================
 class MarketPanel(Static):
+    def __init__(self, token_name, **kwargs):
+        super().__init__(**kwargs)
+        self.token_name = token_name
+
+    def on_mount(self):
+        self.border_title=self.token_name
+       
     def update_metrics(self, metrics):
-        liquidity = "HIGH" if metrics.depth_ratio > 0.7 else "MEDIUM" if metrics.depth_ratio > 0.4 else "LOW"
+        spread = getattr(metrics, "bid_ask_spread", None)
+        depth_ratio = getattr(metrics, "depth_ratio", None)
+
+        spread_text = f"{spread:.4f}" if spread is not None else "N/A"
+        ratio_text = f"{depth_ratio:.4f}" if depth_ratio is not None else "N/A"
 
         self.update(
             f"""
-[bold yellow]Spread:[/] {metrics.bid_ask_spread:.4f}
-[bold cyan]Depth Ratio:[/] {metrics.depth_ratio:.4f}
-"""
+[bold yellow]Spread:[/] {spread_text}
+[bold cyan]Depth Ratio:[/] {ratio_text}
+    """
         )
-
 
 class DepthPanel(Static):
     def update_metrics(self, metrics):
@@ -58,8 +68,13 @@ Sell Slippage: [{sell_color}]{metrics.sell_slippage.slippage:.2%}[/]
         )
 
 class OrderBookPanel(DataTable):
+    def __init__(self, token_name, **kwargs):
+        super().__init__(**kwargs)
+        self.token_name = token_name
+
     def on_mount(self):
         self.add_columns("ASK Price", "ASK Size", "BID Price", "BID Size")
+        self.border_title=self.token_name
 
     def update_orderbook(self, asks, bids):
         self.clear()
@@ -80,11 +95,10 @@ class OrderBookPanel(DataTable):
                 bid_size,
             )
 
-
-
 class SharedState:
     def __init__(self):
-        self.metrics: Optional[OrderBookMetrics] = None
+        self.metrics_up: Optional[OrderBookMetrics] = None
+        self.metrics_down: Optional[OrderBookMetrics] = None
         self.shutdown = False
 # =========================
 # DashBoard APP
@@ -96,40 +110,49 @@ class OrderBookDashboard(App):
     def __init__(self, shared_state):
         super().__init__()
         self.shared_state = shared_state
-        self.last_metrics = None
+        self.last_metrics_up = None
+        self.last_metrics_down = None
 
     def compose(self) -> ComposeResult:
         yield Header()
 
         with Horizontal(id="main-grid"):
-            #self.market = MarketPanel(classes="panel")
+            self.up_market = MarketPanel(classes="panel",token_name="UP")
+            self.down_market = MarketPanel(classes="panel",token_name="DOWN")   
             #self.depth = DepthPanel(classes="panel")
             #self.slippage = SlippagePanel(classes="panel")
-            self.orderbook = OrderBookPanel(classes="pannel")
+            self.up_orderbook = OrderBookPanel(classes="panel",token_name="UP")
+            self.down_orderbook = OrderBookPanel(classes="panel",token_name="DOWN")
             #yield self.market
             #yield self.depth
             #yield self.slippage
-            yield self.orderbook
-
+            yield self.up_orderbook
+            yield self.down_orderbook
+            yield self.up_market
+            yield self.down_market
         yield Footer()
 
     def on_mount(self) -> None:
         self.set_interval(0.1, self.poll_state)
 
     def poll_state(self):
-        metrics = self.shared_state.metrics
+        metrics_up = self.shared_state.metrics_up
+        metrics_down = self.shared_state.metrics_down
 
-        if metrics is None:
+        if metrics_up is None or metrics_down is None:
             return
 
-        if metrics == self.last_metrics:
+        if metrics_up   == self.last_metrics_up and metrics_down == self.last_metrics_down:
             return
 
-        self.last_metrics = metrics
-        self.refresh_dashboard(metrics)
+        self.last_metrics_up = metrics_up
+        self.last_metrics_down = metrics_down
+        self.refresh_dashboard(metrics_up, metrics_down)
 
-    def refresh_dashboard(self, metrics):
-        #self.market.update_metrics(metrics)
+    def refresh_dashboard(self, metrics_up, metrics_down):
+        self.up_market.update_metrics(metrics_up)
+        self.down_market.update_metrics(metrics_down)
         #self.depth.update_metrics(metrics)
         #self.slippage.update_metrics(metrics)
-        self.orderbook.update_orderbook(metrics.asks, metrics.bids)
+        self.up_orderbook.update_orderbook(metrics_up.asks, metrics_up.bids)
+        self.down_orderbook.update_orderbook(metrics_down.asks, metrics_down.bids)
