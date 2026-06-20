@@ -25,6 +25,7 @@ class OrderBookTarget:
 class OrderBookDepth:
     shares: float
     notional: float
+    range: float
 
 
 @dataclass(frozen=True)
@@ -66,8 +67,8 @@ class OrderBookAnalyzer:
         *,
         slippage_notional: float,
     ) -> OrderBookMetrics:
-        bid_depth = cls._depth(market_data.bids)
-        ask_depth = cls._depth(market_data.asks)
+        bid_depth = cls._depth(market_data.bids, 10)
+        ask_depth = cls._depth(market_data.asks, 10)
 
         depth_ratio: Optional[float] = None
         if ask_depth.notional > 0:
@@ -93,10 +94,35 @@ class OrderBookAnalyzer:
         )
 
     @staticmethod
-    def _depth(levels: list[OrderBookLevel]) -> OrderBookDepth:
-        shares = sum(level.size for level in levels)
-        notional = sum(level.price * level.size for level in levels)
-        return OrderBookDepth(shares=shares, notional=notional)
+    def _depth(levels: list[OrderBookLevel], n: int) -> OrderBookDepth:
+        """
+        计算前 N 档的定量深度
+        """
+        # 防御 1：如果整个 levels 列表就是 None 或者为空，直接返回 0 深度
+        if not levels:
+            return OrderBookDepth(shares=0.0, notional=0.0, range=0.0)
+
+        # 使用切片 [:n] 截取前 N 档，安全防错（如果实际档数少于 N，则取全部）
+        top_n_levels = levels[:n]
+
+        shares = 0.0
+        notional = 0.0
+
+        for level in top_n_levels:
+            # 防御 2：如果 level 对象本身为 None，直接跳过
+            if level is None:
+                continue
+                
+            # 防御 3：利用 `or 0.0` 语法，如果 price 或 size 为 None，自动当做 0.0 处理
+            price = getattr(level, 'price', 0.0) or 0.0
+            size = getattr(level, 'size', 0.0) or 0.0
+            
+            shares += size
+            notional += price * size
+            
+        range = top_n_levels[-1].price - top_n_levels[0].price if top_n_levels else 0.0
+        
+        return OrderBookDepth(shares=shares, notional=notional, range=range)
 
     @classmethod
     def _estimate_buy_slippage(
