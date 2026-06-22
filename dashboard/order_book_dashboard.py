@@ -207,11 +207,11 @@ class OrderBookDashboard(App):
         self.down_market.update_metrics(metrics_down)
 
         self.up_depth.update_metrics(
-            metrics_up,metrics_up.asks[0].price if metrics_up.asks else None,
+            metrics_up,metrics_up.asks[-1].price if metrics_up.asks else None,
             metrics_up.bids[-1].price if metrics_up.bids else None)
 
         self.down_depth.update_metrics(
-            metrics_down, metrics_down.asks[0].price if metrics_down.asks else None,
+            metrics_down, metrics_down.asks[-1].price if metrics_down.asks else None,
             metrics_down.bids[-1].price if metrics_down.bids else None)
 
         #self.slippage.update_metrics(metrics)
