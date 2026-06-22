@@ -301,8 +301,8 @@ class PolybBot:
             return
         self._shared_state.metrics_up = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
         self._shared_state.metrics_down = OrderBookAnalyzer.analyze(down_data,slippage_notional=50.0)
-        logger.debug("up_data metrics: %s", self._shared_state.metrics_up)
-        logger.debug("down_data metrics: %s", self._shared_state.metrics_down)
+        logger.info("up_data metrics: %s", self._shared_state.metrics_up)
+        logger.info("down_data metrics: %s", self._shared_state.metrics_down)
         # 1. BTC 5m 涨跌市场买卖策略
         if settings.btc_5min_enabled:
             # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
