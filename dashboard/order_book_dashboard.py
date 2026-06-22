@@ -72,17 +72,16 @@ class DepthPanel(Static):
 
         ask_bar = get_scaled_bar(ask_shares)
         bid_bar = get_scaled_bar(bid_shares)
-
         # 5. 安全渲染
         self.update(
             f"""
-[bold red]ASK (Top Depth)[/]
-价格: {ask_price_str}  
+[bold red]ASK (Top N Depth)[/]
+买1: {ask_price_str}  
 张数: {ask_shares:>8.0f}  
 资金: {ask_notional:>9.1f} USDC
 [red]{ask_bar}[/]
-[bold green]BID (Top Depth)[/]
-价格: {bid_price_str}  
+[bold green]BID (Top N Depth)[/]
+买1: {bid_price_str}  
 张数: {bid_shares:>8.0f}  
 资金: {bid_notional:>9.1f} USDC
 [green]{bid_bar}[/]
@@ -166,22 +165,32 @@ class OrderBookDashboard(App):
         yield Header()
 
         with Horizontal(id="main-grid"):
-            self.up_market = MarketPanel(classes="panel",token_name="UP")
-            self.down_market = MarketPanel(classes="panel",token_name="DOWN")   
-            self.up_depth = DepthPanel(classes="panel",token_name="UP")
-            self.down_depth = DepthPanel(classes="panel",token_name="DOWN")
-            #self.slippage = SlippagePanel(classes="panel")
-            self.up_orderbook = OrderBookPanel(classes="panel",token_name="UP")
-            self.down_orderbook = OrderBookPanel(classes="panel",token_name="DOWN")
-            #yield self.market
-            #yield self.depth
-            #yield self.slippage
-            yield self.up_orderbook
-            yield self.down_orderbook
-            yield self.up_market
-            yield self.down_market
-            yield self.up_depth
-            yield self.down_depth
+            with Vertical(id="left-column", classes="column"):
+                self.up_orderbook = OrderBookPanel(classes="panel",token_name="UP Order Book")
+                self.down_orderbook = OrderBookPanel(classes="panel",token_name="DOWN Order Book")
+
+                yield self.up_orderbook
+                yield self.down_orderbook
+
+            with Vertical(id="right-column", classes="column"):
+                self.up_market = MarketPanel(classes="panel",token_name="UP Market Data")
+                self.down_market = MarketPanel(classes="panel",token_name="DOWN Market Data")
+                yield self.up_market
+                yield self.down_market
+
+
+                with Horizontal(classes="right-sub-horizontal"):  
+                    self.up_depth = DepthPanel(classes="panel",token_name="UP N Depth")
+                    self.down_depth = DepthPanel(classes="panel",token_name="DOWN N Depth")
+                    yield self.up_depth
+                    yield self.down_depth
+
+                with Horizontal(classes="right-sub-horizontal"):
+                    self.up_n_orderbook = OrderBookPanel(classes="panel",token_name="UP N OrderBook")
+                    self.down_n_orderbook = OrderBookPanel(classes="panel",token_name="DOWN N OrderBook")
+                    yield self.up_n_orderbook
+                    yield self.down_n_orderbook
+
         yield Footer()
 
     def on_mount(self) -> None:
@@ -214,6 +223,8 @@ class OrderBookDashboard(App):
             metrics_down, metrics_down.asks[-1].price if metrics_down.asks else None,
             metrics_down.bids[-1].price if metrics_down.bids else None)
 
-        #self.slippage.update_metrics(metrics)
         self.up_orderbook.update_orderbook(metrics_up.asks, metrics_up.bids)
         self.down_orderbook.update_orderbook(metrics_down.asks, metrics_down.bids)
+
+        self.up_n_orderbook.update_orderbook(metrics_up.asks[:-11:-1],metrics_up.bids[:-11:-1])
+        self.down_n_orderbook.update_orderbook(metrics_down.asks[:-11:-1],metrics_down.bids[:-11:-1])

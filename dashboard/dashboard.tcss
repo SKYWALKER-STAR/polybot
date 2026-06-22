@@ -2,14 +2,43 @@ Screen {
     layout: vertical;
 }
 
+
 #main-grid {
-    height: 1fr;
-    layout: horizontal;
+    width: 100%;
+    height: 100%;
 }
 
+/* 栏内的单个面板：高度等分 */
 .panel {
-    width: 1fr;
-    margin: 1;
-    padding: 1 2;
-    border: round green;
+    width: 100%;
+    height: 1fr;     /* 使用 1fr 自由比例，三个面板就会各占 1/3 高度 */
+    margin-bottom: 1;/* 面板之间的垂直间距 */
+    border: solid green; /* 边框线，方便你观察结构 */
+}
+
+
+.column {
+    width: 50%;
+    height: 100%;
+    padding: 1;      /* 栏内边距，让边缘有呼吸感 */
+}
+
+
+#left-column, #right-column {
+    width: 50%;
+    height: 100%;
+    padding: 1;          /* 栏内边距，让边缘有呼吸感 */
+}
+
+
+/* 👇 关键：新水平嵌套框的样式 */
+.right-sub-horizontal {
+    width: 100%;
+    height: 1fr; /* 让这个水平大框在右侧垂直排列中占 1 份高度 */
+}
+
+/* 👇 关键：让水平框内部的面板宽度平分，而不是撑满 100% */
+.right-sub-horizontal .panel {
+    width: 50%;   /* 两个面板各占水平空间的 50% */
+    height: 100%; /* 高度充满父级水平框 */
 }

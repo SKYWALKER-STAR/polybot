@@ -102,8 +102,8 @@ class OrderBookAnalyzer:
         if not levels:
             return OrderBookDepth(shares=0.0, notional=0.0, range=0.0)
 
-        # 使用切片 [:n] 截取前 N 档，安全防错（如果实际档数少于 N，则取全部）
-        top_n_levels = levels[:n]
+        # 使用切片 [:n] 截取前 N 档(从列表最后开始索引)，安全防错（如果实际档数少于 N，则取全部）
+        top_n_levels = levels[-n:]
 
         shares = 0.0
         notional = 0.0
