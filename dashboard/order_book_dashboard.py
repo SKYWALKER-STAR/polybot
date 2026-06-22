@@ -77,11 +77,14 @@ class DepthPanel(Static):
         self.update(
             f"""
 [bold red]ASK (Top Depth)[/]
-价格: {ask_price_str} | 张数: {ask_shares:>8.0f} | 资金: {ask_notional:>9.1f} USDC
+价格: {ask_price_str}  
+张数: {ask_shares:>8.0f}  
+资金: {ask_notional:>9.1f} USDC
 [red]{ask_bar}[/]
-
 [bold green]BID (Top Depth)[/]
-价格: {bid_price_str} | 张数: {bid_shares:>8.0f} | 资金: {bid_notional:>9.1f} USDC
+价格: {bid_price_str}  
+张数: {bid_shares:>8.0f}  
+资金: {bid_notional:>9.1f} USDC
 [green]{bid_bar}[/]
 """
         )
