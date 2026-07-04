@@ -215,14 +215,17 @@ class PolymarketClient:
             Condition ID of the binary market.
         amount : float
             Human-readable pUSD amount to split (e.g. ``100.0`` → split $100).
+            Internally converted to base-units (6 decimals) as required by SDK.
 
         Returns
         -------
         dict with ``transaction_hash`` on success, raises on failure.
         """
+        # SDK 要求整数 base-units：1 pUSD = 1_000_000
+        amount_base_units = int(round(amount * 1_000_000))
         handle = await self.client.split_position(
             condition_id=condition_id,
-            amount=amount,
+            amount=amount_base_units,
         )
         outcome = await handle.wait()
         tx_hash = str(getattr(outcome, "transaction_hash", "") or "")
@@ -246,12 +249,17 @@ class PolymarketClient:
             Condition ID of the binary market.
         amount : float | str
             Number of complete sets to merge, or ``"max"`` to merge everything.
+            Float values are converted to base-units (6 decimals) as required by SDK.
 
         Returns
         -------
         dict with ``transaction_hash`` on success, raises on failure.
         """
-        merge_amount: Any = amount if amount == "max" else float(amount)
+        # SDK 要求整数 base-units，或字符串 "max"
+        if amount == "max":
+            merge_amount: Any = "max"
+        else:
+            merge_amount = int(round(float(amount) * 1_000_000))
         handle = await self.client.merge_positions(
             condition_id=condition_id,
             amount=merge_amount,

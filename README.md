@@ -1,14 +1,15 @@
 # Polybot — Polymarket 自动交易机器人
 
-面向 Polymarket 的自动化交易框架，支持 **BTC 5分钟涨跌**二元市场与**多选事件市场**（大选、颁奖礼等），内置三套策略：
+面向 Polymarket 的自动化交易框架，支持 **BTC 5分钟涨跌**二元市场与**任意市场**（多选事件、单二元市场等），内置四套策略：
 
 | 策略 | 文件 | 说明 |
 |---|---|---|
 | `btc_5min` | [strategy/btc_5min.py](strategy/btc_5min.py) | 临近结算时押注涨/跌方向 |
 | `btc_arb` | [strategy/btc_arb.py](strategy/btc_arb.py) | BTC 5min YES+NO 价差无风险套利（Split/Merge） |
 | `multi_arb` | [strategy/multi_arb.py](strategy/multi_arb.py) | **多选市场套利监听**（任意 Polymarket 多选事件） |
+| `slug_arb` | [strategy/slug_arb.py](strategy/slug_arb.py) | **通用 Slug 套利**（任意市场，通过 slug 配置，含链上 split/merge） |
 
-三套策略可**同时运行**，互不干扰；也可通过 `.env` 单独开启任意组合。
+四套策略可**同时运行**，互不干扰；也可通过 `.env` 单独开启任意组合。
 
 ### 策略开关速查
 
@@ -17,24 +18,31 @@
 BTC_5MIN_ENABLED=true
 ARB_ENABLED=false
 ELECTION_ARB_ENABLED=false
+SLUG_ARB_ENABLED=false
 
 # 仅运行 BTC 套利策略（先开观察模式验证）
 BTC_5MIN_ENABLED=false
 ARB_ENABLED=true
 ARB_OBSERVE_MODE=true
 
-# 同时监听多个市场（逗号分隔）
+# 同时监听多个多选事件市场（逗号分隔）
 ELECTION_MARKET_SLUGS=democratic-presidential-nominee-2028,republican-presidential-nominee-2028
 ELECTION_ARB_ENABLED=true
 ELECTION_ARB_OBSERVE_MODE=true
 
-# 同时运行全部三套策略
+# 通用 Slug 套利：指定任意市场 slug，含链上 split/merge（建议先开观察模式）
+SLUG_ARB_ENABLED=true
+SLUG_ARB_OBSERVE_MODE=true
+SLUG_ARB_MARKET_SLUGS=will-btc-reach-100k-2025,eth-price-end-of-2026
+
+# 同时运行全部四套策略
 BTC_5MIN_ENABLED=true
 ARB_ENABLED=true
 ELECTION_ARB_ENABLED=true
+SLUG_ARB_ENABLED=true
 ```
 
-> 三项均为 `false` 时，bot 启动会报错并退出，防止空跑。
+> 四项均为 `false` 时，bot 启动会报错并退出，防止空跑。
 
 ---
 
@@ -57,7 +65,8 @@ polybot/
 │   ├── base.py                   # 抽象策略基类（接口定义）
 │   ├── btc_5min.py               # BTC 5分钟方向性策略
 │   ├── btc_arb.py                # BTC YES/NO 价差无风险套利策略
-│   └── multi_arb.py              # 多选市场套利策略（新增）
+│   ├── multi_arb.py              # 多选市场套利策略
+│   └── slug_arb.py               # 通用 Slug 套利策略（任意市场，含链上 split/merge）
 ├── database/
 │   ├── connection.py             # SQLAlchemy 引擎与会话工厂
 │   └── models.py                 # ORM 模型：orders / market_snapshots / audit_logs
@@ -279,6 +288,122 @@ grep "★ 套利机会 ★" logs/polybot.log
 
 ---
 
+## 策略四：通用 Slug 套利（slug_arb）
+
+**原理**：与 `btc_arb` / `multi_arb` 相同，基于 YES+NO merge/split 的无风险价差套利。区别在于：
+
+| | btc_arb | multi_arb | **slug_arb** |
+|---|---|---|---|
+| 目标市场 | 仅 BTC 5min | 仅多选事件 | **任意市场（slug 配置）** |
+| 市场数量 | 1 | 多个候选结果 | **一个或多个 slug** |
+| 链上 merge | ✅ | ❌ | ✅ |
+| 链上 split | ✅ | ❌ | ✅ |
+| 市场发现 | 时间戳推导 | Gamma API | **Gamma API（按 slug）** |
+
+`slug_arb` 是最通用的版本——只需在 `.env` 中填入任意 Polymarket 市场/事件的 slug，即可自动解析其下所有子市场（含多选事件的多个候选结果），并对每对 YES/NO token 独立检测并执行套利。
+
+### 如何获取 slug
+
+slug 即 Polymarket 市场或事件 URL 的最后一段路径：
+
+```
+https://polymarket.com/event/will-btc-reach-100k-by-end-of-2025
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                             slug = will-btc-reach-100k-by-end-of-2025
+
+https://polymarket.com/event/democratic-presidential-nominee-2028
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                             slug = democratic-presidential-nominee-2028
+                             （多选事件：自动解析所有候选结果）
+```
+
+### 配置参数（`.env`）
+
+```ini
+# ---- 基本开关 -------------------------------------------------------
+# 启用策略
+SLUG_ARB_ENABLED=true
+
+# 观察模式（强烈建议首次启用时保持 true）
+# true  = 每 tick INFO 打印实时订单簿市价；发现机会时打印完整快照；不下单不链上操作
+# false = 执行真实的 FOK 下单 + 链上 merge_positions / split_position
+SLUG_ARB_OBSERVE_MODE=true
+
+# 目标市场 slug 列表，逗号分隔，支持同时监控多个市场
+# 支持二元市场（单 YES/NO 对）和多选事件（自动解析多个候选结果子市场）
+SLUG_ARB_MARKET_SLUGS=will-btc-reach-100k-2025,eth-price-end-of-2026
+
+# ---- 触发阈值 -------------------------------------------------------
+SLUG_ARB_MIN_MERGE_SPREAD=0.008   # YES_ask + NO_ask ≤ 0.992 时触发 Merge 套利
+SLUG_ARB_MIN_SPLIT_SPREAD=0.008   # YES_bid + NO_bid ≥ 1.008 时触发 Split 套利
+
+# ---- 资金规模 -------------------------------------------------------
+SLUG_ARB_BASE_TRADE_USDC=50.0     # 单次套利基础规模（USDC）
+SLUG_ARB_MAX_TRADE_USDC=100.0     # 单次套利上限（USDC）
+
+# ---- 风控 -----------------------------------------------------------
+SLUG_ARB_COOLDOWN_SECONDS=3.0     # 两次套利之间的冷却期（等待链上确认）
+SLUG_ARB_LIQUIDITY_MIN_SIZE=10.0  # 订单簿最小深度（shares），低于此跳过
+SLUG_ARB_SLIPPAGE_TOLERANCE=0.002 # FOK 单价格容忍滑点（0.2 分）
+SLUG_ARB_ESTIMATED_GAS_USDC=0.005 # Polygon gas 估算（USDC），用于净利润过滤
+```
+
+### 推荐上线流程
+
+```
+第一步：观察模式运行 1～2 天，确认日志中出现合理的套利机会
+  SLUG_ARB_ENABLED=true
+  SLUG_ARB_OBSERVE_MODE=true
+  SLUG_ARB_MARKET_SLUGS=<你的目标 slug>
+
+第二步：调整阈值（通过日志中 merge_sum / split_sum 偏离数据）
+  SLUG_ARB_MIN_MERGE_SPREAD=0.005   ← 可适当降低以捕获更多机会
+  SLUG_ARB_MIN_SPLIT_SPREAD=0.005
+
+第三步：确认无误后关闭观察模式，并先以小规模测试
+  SLUG_ARB_OBSERVE_MODE=false
+  SLUG_ARB_BASE_TRADE_USDC=5.0
+  DRY_RUN=false
+```
+
+### 执行流程（毫秒级）
+
+```
+Merge 套利：
+  asyncio.gather(
+      FOK BUY YES @ask,    ← 两笔订单并发提交
+      FOK BUY NO  @ask,
+  )
+  → merge_positions(condition_id, amount)  ← 链上合并
+
+Split 套利：
+  split_position(condition_id, amount)     ← 链上拆分
+  asyncio.gather(
+      FOK SELL YES @bid,   ← 两笔订单并发提交
+      FOK SELL NO  @bid,
+  )
+```
+
+### 日志过滤
+
+所有日志均以 `[slug_arb:{slug}][{市场名}]` 为前缀：
+
+```bash
+# 查看所有 slug_arb 套利机会
+grep "slug_arb:" logs/polybot.log
+
+# 查看特定市场的实时价格日志
+grep "slug_arb:will-btc-reach-100k-2025" logs/polybot.log
+
+# 仅看发现套利机会的行（跨所有策略）
+grep "★ 套利机会 ★" logs/polybot.log
+
+# 查看套利执行结果（成功 / 失败）
+grep -E "✅|MERGE 风险|SPLIT 卖单未" logs/polybot.log
+```
+
+---
+
 ## 数据库表说明
 
 ## 通用订单簿分析
@@ -381,6 +506,9 @@ print(report.metrics.sell_slippage.slippage)
 | `ARB_LIQUIDITY_MIN_SIZE` | BTC 套利流动性门槛，薄市场不进场 |
 | `ELECTION_ARB_OBSERVE_MODE=true` | 多选市场仅打印套利机会，不执行任何交易（默认开启） |
 | `ELECTION_ARB_LIQUIDITY_MIN_SIZE` | 多选市场流动性门槛，低于此跳过 |
+| `SLUG_ARB_OBSERVE_MODE=true` | 通用 Slug 套利仅打印，不下单不链上操作（默认开启） |
+| `SLUG_ARB_LIQUIDITY_MIN_SIZE` | Slug 套利流动性门槛，低于此跳过 |
+| `SLUG_ARB_COOLDOWN_SECONDS` | Slug 套利链上 tx 冷却，防止 nonce 冲突 |
 | 审计追踪 | 每个操作（含失败、干跑跳过）均写入 PostgreSQL |
 | 优雅关闭 | 收到 SIGINT / SIGTERM 后干净停止，打印各策略统计 |
 

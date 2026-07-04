@@ -198,6 +198,49 @@ class Settings(BaseSettings):
     election_arb_estimated_gas_usdc: float = Field(default=0.005, ge=0)
 
     # ------------------------------------------------------------------ #
+    # Strategy — Slug Arb（通用 Binary 市场 Split/Merge 套利）
+    # ------------------------------------------------------------------ #
+
+    # 是否启用通用 slug 套利策略
+    slug_arb_enabled: bool = Field(default=False)
+
+    # 观察模式：仅打印套利机会，不执行任何真实交易。建议首次启用时保持 True。
+    slug_arb_observe_mode: bool = Field(default=True)
+
+    # 目标市场 slug 列表，逗号分隔，支持同时监控多个市场。
+    # slug 即 Polymarket 市场/事件 URL 最后一段路径，例如：
+    #   https://polymarket.com/event/will-btc-reach-100k → will-btc-reach-100k
+    # 支持二元市场（单 YES/NO 对）和多选事件（多个结果子市场）。
+    slug_arb_market_slugs: str = Field(
+        default="",
+        description="Comma-separated Polymarket event/market slugs for binary split/merge arb",
+    )
+
+    # Merge 套利触发阈值：YES_ask + NO_ask ≤ 1 - slug_arb_min_merge_spread
+    slug_arb_min_merge_spread: float = Field(default=0.008, gt=0, lt=1)
+
+    # Split 套利触发阈值：YES_bid + NO_bid ≥ 1 + slug_arb_min_split_spread
+    slug_arb_min_split_spread: float = Field(default=0.008, gt=0, lt=1)
+
+    # 单次套利最大 USDC 规模
+    slug_arb_max_trade_usdc: float = Field(default=100.0, gt=0)
+
+    # 单次套利基础 USDC 规模（受深度限制后可能更小）
+    slug_arb_base_trade_usdc: float = Field(default=50.0, gt=0)
+
+    # 两次套利之间的冷却时间（秒）
+    slug_arb_cooldown_seconds: float = Field(default=3.0, ge=0)
+
+    # 订单簿最小可用深度（shares）
+    slug_arb_liquidity_min_size: float = Field(default=10.0, gt=0)
+
+    # FOK 买/卖单滑点容忍（USDC 价格偏移）
+    slug_arb_slippage_tolerance: float = Field(default=0.002, ge=0, lt=0.1)
+
+    # Gas 费用估算（USDC），用于净利润门槛过滤
+    slug_arb_estimated_gas_usdc: float = Field(default=0.005, ge=0)
+
+    # ------------------------------------------------------------------ #
     # Logging
     # ------------------------------------------------------------------ #
     log_level: str = Field(default="INFO")

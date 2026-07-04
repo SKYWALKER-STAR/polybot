@@ -44,11 +44,17 @@ from strategy.base import BaseStrategy
 from strategy.btc_5min import Btc5MinStrategy, StrategyConfig
 from strategy.btc_arb import BtcArbStrategy, ArbConfig
 from strategy.multi_arb import MultiArbConfig, MultiArbStrategy
+from strategy.slug_arb import SlugArbConfig, SlugArbStrategy
 
 
 def _parse_election_slugs() -> list[str]:
     """将逗号分隔的 ELECTION_MARKET_SLUGS 字符串解析为列表。"""
     return [s.strip() for s in settings.election_market_slugs.split(",") if s.strip()]
+
+
+def _parse_slug_arb_slugs() -> list[str]:
+    """将逗号分隔的 SLUG_ARB_MARKET_SLUGS 字符串解析为列表。"""
+    return [s.strip() for s in settings.slug_arb_market_slugs.split(",") if s.strip()]
 
 
 # ------------------------------------------------------------------ #
@@ -106,6 +112,12 @@ class PolybBot:
                 active.append(
                     f"multi_arb:{_slug}"
                     + ("[观察]" if settings.election_arb_observe_mode else "")
+                )
+        if settings.slug_arb_enabled:
+            for _slug in _parse_slug_arb_slugs():
+                active.append(
+                    f"slug_arb:{_slug}"
+                    + ("[观察]" if settings.slug_arb_observe_mode else "")
                 )
         logger.info(
             "=== Polybot starting ===  dry_run=%s  poll_interval=%ss  active_strategies=%s",
@@ -225,6 +237,43 @@ class PolybBot:
         else:
             logger.info("多选市场套利策略未启用（election_arb_enabled=False）")
 
+        # --- 通用 Slug 套利策略（可选，支持多个市场同时监控）-----------
+        self._slug_arb_strategy: Optional[SlugArbStrategy] = None
+        if settings.slug_arb_enabled:
+            slug_arb_slugs = _parse_slug_arb_slugs()
+            if not slug_arb_slugs:
+                logger.warning(
+                    "slug_arb 已启用（SLUG_ARB_ENABLED=true）但 SLUG_ARB_MARKET_SLUGS 为空，"
+                    "请在 .env 中配置至少一个 slug。"
+                )
+            else:
+                slug_arb_config = SlugArbConfig(
+                    min_merge_spread=settings.slug_arb_min_merge_spread,
+                    min_split_spread=settings.slug_arb_min_split_spread,
+                    max_trade_usdc=settings.slug_arb_max_trade_usdc,
+                    base_trade_usdc=settings.slug_arb_base_trade_usdc,
+                    cooldown_seconds=settings.slug_arb_cooldown_seconds,
+                    liquidity_min_size=settings.slug_arb_liquidity_min_size,
+                    slippage_tolerance=settings.slug_arb_slippage_tolerance,
+                    estimated_gas_usdc=settings.slug_arb_estimated_gas_usdc,
+                    observe_mode=settings.slug_arb_observe_mode,
+                )
+                self._slug_arb_strategy = SlugArbStrategy(
+                    client=self._client,
+                    order_manager=self._order_manager,
+                    ws_feed=self._ws_feed,
+                    slugs=slug_arb_slugs,
+                    config=slug_arb_config,
+                )
+                await self._slug_arb_strategy.on_start()
+                logger.info(
+                    "slug_arb 策略已启用，共 %d 个市场: %s",
+                    len(slug_arb_slugs),
+                    ", ".join(slug_arb_slugs),
+                )
+        else:
+            logger.info("slug_arb 策略未启用（SLUG_ARB_ENABLED=false）")
+
         # --- signal handlers ----------------------------------------
         #signal.signal(signal.SIGINT, self._handle_shutdown)
         #signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -238,6 +287,9 @@ class PolybBot:
                 "btc_5min_enabled": settings.btc_5min_enabled,
                 "arb_enabled": settings.arb_enabled,
                 "arb_observe_mode": settings.arb_observe_mode,
+                "slug_arb_enabled": settings.slug_arb_enabled,
+                "slug_arb_observe_mode": settings.slug_arb_observe_mode,
+                "slug_arb_market_slugs": settings.slug_arb_market_slugs,
                 "dry_run": settings.dry_run,
                 "poll_interval": settings.poll_interval_seconds,
                 "started_at": datetime.now(timezone.utc).isoformat(),
@@ -265,6 +317,8 @@ class PolybBot:
                 self._arb_strategy.on_stop()
             for _, e_arb in self._election_components:
                 e_arb.on_stop()
+            if self._slug_arb_strategy is not None:
+                self._slug_arb_strategy.on_stop()
             self._audit.bot_stop(
                 details={"stopped_at": datetime.now(timezone.utc).isoformat()}
             )
@@ -288,7 +342,6 @@ class PolybBot:
     # ------------------------------------------------------------------ #
 
     async def _tick(self) -> None:
-        logger.info("Hello world from _Tick")
         try:
             up_data, down_data = await self._market_data.fetch()
         except Exception as exc:
@@ -299,12 +352,13 @@ class PolybBot:
                 error_message=str(exc),
             )
             return
-        self._shared_state.metrics_up = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
-        self._shared_state.metrics_down = OrderBookAnalyzer.analyze(down_data,slippage_notional=50.0)
-        logger.info("up_data metrics: %s", self._shared_state.metrics_up)
-        logger.info("down_data metrics: %s", self._shared_state.metrics_down)
+
         # 1. BTC 5m 涨跌市场买卖策略
         if settings.btc_5min_enabled:
+            self._shared_state.metrics_up = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
+            self._shared_state.metrics_down = OrderBookAnalyzer.analyze(down_data,slippage_notional=50.0)
+            logger.debug("up_data metrics: %s", self._shared_state.metrics_up)
+            logger.debug("down_data metrics: %s", self._shared_state.metrics_down)
             # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
             current_condition_id = up_data.condition_id
             if self._last_condition_id and self._last_condition_id != current_condition_id:
@@ -368,6 +422,13 @@ class PolybBot:
                 await e_arb.on_tick(outcomes)
             except Exception as exc:
                 logger.exception("[%s] on_tick 异常: %s", e_arb.name, exc)
+
+        # 2c. 通用 Slug 套利 tick
+        if self._slug_arb_strategy is not None:
+            try:
+                await self._slug_arb_strategy.on_tick()
+            except Exception as exc:
+                logger.exception("[slug_arb] on_tick 异常: %s", exc)
 
         # 2. 止损 / 止盈检查（在策略信号之前，优先清除局面）
         if self._strategy is not None and settings.strategy_stop_loss_pct > 0:
@@ -589,9 +650,9 @@ def handle_shutdown(signum, frame):
 if __name__ == "__main__":
     _setup_logging()
     strategy = _build_strategy()
-    if strategy is None and not settings.arb_enabled and not settings.election_arb_enabled:
+    if strategy is None and not settings.arb_enabled and not settings.election_arb_enabled and not settings.slug_arb_enabled:
         logger.error(
-            "配置错误：btc_5min、btc_arb 和 election_arb 策略均已关闭。"
+            "配置错误：btc_5min、btc_arb、election_arb 和 slug_arb 策略均已关闭。"
             "请在 .env 中至少启用一个策略。"
         )
         sys.exit(1)
