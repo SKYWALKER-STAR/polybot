@@ -21,10 +21,15 @@ import logging
 import signal
 import sys
 import threading
+
+import argparse
+import urllib.parse
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from pprint import pprint
+
 
 from config.settings import settings
 from core.client import PolymarketClient
@@ -263,6 +268,7 @@ class PolybBot:
                     order_manager=self._order_manager,
                     ws_feed=self._ws_feed,
                     slugs=slug_arb_slugs,
+                    shared_state=self._shared_state,  # 传递 shared_state
                     config=slug_arb_config,
                 )
                 await self._slug_arb_strategy.on_start()
@@ -342,19 +348,20 @@ class PolybBot:
     # ------------------------------------------------------------------ #
 
     async def _tick(self) -> None:
-        try:
-            up_data, down_data = await self._market_data.fetch()
-        except Exception as exc:
-            logger.error("Market data fetch failed: %s", exc)
-            self._audit.record(
-                action=AuditAction.MARKET_DATA_FETCH,
-                result=AuditResult.FAILURE,
-                error_message=str(exc),
-            )
-            return
+
 
         # 1. BTC 5m 涨跌市场买卖策略
         if settings.btc_5min_enabled:
+            try:
+                up_data, down_data = await self._market_data.fetch()
+            except Exception as exc:
+                logger.error("Market data fetch failed: %s", exc)
+                self._audit.record(
+                    action=AuditAction.MARKET_DATA_FETCH,
+                    result=AuditResult.FAILURE,
+                    error_message=str(exc),
+                )
+                return
             self._shared_state.metrics_up = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
             self._shared_state.metrics_down = OrderBookAnalyzer.analyze(down_data,slippage_notional=50.0)
             logger.debug("up_data metrics: %s", self._shared_state.metrics_up)
@@ -410,6 +417,7 @@ class PolybBot:
 
         # 2a. 套利策略 tick（高优先级，在普通策略之前执行）
         if self._arb_strategy is not None:
+
             try:
                 await self._arb_strategy.on_tick(up_data, down_data)
             except Exception as exc:
@@ -425,6 +433,7 @@ class PolybBot:
 
         # 2c. 通用 Slug 套利 tick
         if self._slug_arb_strategy is not None:
+
             try:
                 await self._slug_arb_strategy.on_tick()
             except Exception as exc:
@@ -643,11 +652,22 @@ def handle_shutdown(signum, frame):
     print(f"Received signal: {signum}")
     shared_state.shutdown = True
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Polybot API function selector")
+    parser.add_argument(
+        "--mode",
+        default=None,
+        choices=["console", "tui"],
+        help="Select the mode of operation: console or tui",
+    )
+    return parser.parse_args()
+
 # ------------------------------------------------------------------ #
 # Entry point
 # ------------------------------------------------------------------ #
 
 if __name__ == "__main__":
+    args = _parse_args()
     _setup_logging()
     strategy = _build_strategy()
     if strategy is None and not settings.arb_enabled and not settings.election_arb_enabled and not settings.slug_arb_enabled:
@@ -661,11 +681,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    bot_thread = threading.Thread(
-        target=run_bot,
-        args=(strategy, shared_state),
-    )
-
-    bot_thread.start()
-    app = OrderBookDashboard(shared_state)
-    app.run()
+    if args.mode == "tui":
+        bot_thread = threading.Thread(
+            target=run_bot,
+            args=(strategy, shared_state),
+        )
+        bot_thread.start()
+        app = OrderBookDashboard(shared_state)
+        app.run()
+    elif args.mode == "console":
+        run_bot(strategy, shared_state)

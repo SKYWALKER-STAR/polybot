@@ -61,6 +61,8 @@ from core.event_market_resolver import EventMarketDataService, EventMarketResolv
 from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest
 from core.ws_market_feed import WsMarketFeed
+from audit.logger import AuditLogger
+from core.order_book import OrderBookAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,7 @@ class SlugArbStrategy:
         order_manager: OrderManager,
         ws_feed: WsMarketFeed,
         slugs: list[str],
+        shared_state: dict,  # 新增
         config: Optional[SlugArbConfig] = None,
     ) -> None:
         self._client = client
@@ -213,6 +216,8 @@ class SlugArbStrategy:
         self._ws_feed = ws_feed
         self._cfg = config or SlugArbConfig()
         self._slugs = slugs
+        self._audit = AuditLogger()
+        self._shared_state = shared_state  # 新增
 
         # 每个 slug 对应独立的 Resolver + DataService（复用现有基础设施）
         # list[(slug, EventMarketDataService)]
@@ -319,6 +324,11 @@ class SlugArbStrategy:
 
         冷却、并发保护、观察模式均在此方法内处理。
         """
+        # ---- 更新共享状态，供 TUI 使用 -----------------------------
+        self._shared_state.metrics_up = OrderBookAnalyzer.analyze(yes_data,slippage_notional=50.0)
+        self._shared_state.metrics_down = OrderBookAnalyzer.analyze(no_data,slippage_notional=50.0)
+
+
         condition_id = yes_data.condition_id
         state = self._states.setdefault(condition_id, _MarketState())
         label = f"slug_arb:{slug}"
@@ -388,6 +398,26 @@ class SlugArbStrategy:
             opp.yes_outcome, opp.no_outcome, merge_sum, 1.0 - merge_sum,
             opp.yes_outcome, opp.no_outcome, split_sum, split_sum - 1.0,
             opp.trade_size_usdc, opp.net_profit,
+        )
+
+        # ---- 写入数据库 ----------------------------------------------
+        self._audit.record(
+            action=AuditAction.ARB_OPPORTUNITY,
+            result=AuditResult.SUCCESS,
+            details={
+                "strategy": self.name,
+                "slug": opp.slug,
+                "outcome_title": opp.outcome_title,
+                "mode": opp.mode.value,
+                "condition_id": opp.condition_id,
+                "yes_price": opp.yes_price,
+                "no_price": opp.no_price,
+                "sum_price": opp.yes_price + opp.no_price,
+                "trade_size_usdc": opp.trade_size_usdc,
+                "gross_profit": opp.gross_profit,
+                "net_profit": opp.net_profit,
+                "observe_mode": self._cfg.observe_mode,
+            }
         )
 
         # 观察模式：仅打印，不执行任何交易操作

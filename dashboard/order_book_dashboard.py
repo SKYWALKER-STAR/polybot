@@ -35,6 +35,43 @@ class MarketPanel(Static):
 [bold cyan]Depth Ratio:[/] {ratio_text}
     """
         )
+class ArbPanel(Static):
+    def __init__(self, token_name, **kwargs):
+        super().__init__(**kwargs)
+        self.token_name = token_name
+
+    def on_mount(self):
+        self.border_title=self.token_name
+       
+    def update_metrics(self, metrics_up, metrics_down):
+        # asks 列表降序存储（最低卖价在末尾），取 [-1] 为「卖1」
+        # 需同时检查对象不为 None 且列表非 None / 非空，否则 [-1] 会 IndexError
+        best_up_ask   = metrics_up.asks[-1].price   if (metrics_up   is not None and metrics_up.asks)   else None
+        best_down_ask = metrics_down.asks[-1].price if (metrics_down is not None and metrics_down.asks) else None
+
+        # bids 列表升序存储（最高买价在末尾），取 [-1] 为「买1」
+        best_up_bid   = metrics_up.bids[-1].price   if (metrics_up   is not None and metrics_up.bids)   else None
+        best_down_bid = metrics_down.bids[-1].price if (metrics_down is not None and metrics_down.bids) else None
+
+        # 卖1+卖1（ask+ask）= Merge 套利成本；< 1.0 时存在 Merge 机会
+        ask_sum = (best_up_ask + best_down_ask) if (best_up_ask is not None and best_down_ask is not None) else None
+        # 买1+买1（bid+bid）= Split 套利收益；> 1.0 时存在 Split 机会
+        bid_sum = (best_up_bid + best_down_bid) if (best_up_bid is not None and best_down_bid is not None) else None
+
+        ask_sum_text = f"{ask_sum:.4f}" if ask_sum is not None else "N/A"
+        bid_sum_text = f"{bid_sum:.4f}" if bid_sum is not None else "N/A"
+
+        ask_hint = (f"  [bold green]← Merge 机会 (偏离 {1.0 - ask_sum:.4f})[/]"
+                    if ask_sum is not None and ask_sum < 1.0 else "")
+        bid_hint = (f"  [bold green]← Split 机会 (偏离 {bid_sum - 1.0:.4f})[/]"
+                    if bid_sum is not None and bid_sum > 1.0 else "")
+
+        self.update(
+            f"""
+[bold yellow]卖1+卖1 (ask+ask):[/] {ask_sum_text}{ask_hint}
+[bold cyan]买1+买1 (bid+bid):[/] {bid_sum_text}{bid_hint}
+    """
+        )
 
 class DepthPanel(Static):
     def __init__(self, token_name, **kwargs):
@@ -166,28 +203,32 @@ class OrderBookDashboard(App):
 
         with Horizontal(id="main-grid"):
             with Vertical(id="left-column", classes="column"):
-                self.up_orderbook = OrderBookPanel(classes="panel",token_name="UP Order Book")
-                self.down_orderbook = OrderBookPanel(classes="panel",token_name="DOWN Order Book")
+                self.up_orderbook = OrderBookPanel(classes="panel",token_name="UP/YES Order Book")
+                self.down_orderbook = OrderBookPanel(classes="panel",token_name="DOWN/NO Order Book")
 
                 yield self.up_orderbook
                 yield self.down_orderbook
 
             with Vertical(id="right-column", classes="column"):
-                self.up_market = MarketPanel(classes="panel",token_name="UP Market Data")
-                self.down_market = MarketPanel(classes="panel",token_name="DOWN Market Data")
-                yield self.up_market
-                yield self.down_market
 
+                self.arb = ArbPanel(classes="panel",token_name="Arb Data")
+                yield self.arb
+
+                with Horizontal(classes="right-sub-horizontal"):
+                    self.up_market = MarketPanel(classes="panel",token_name="UP/YES Market Data")
+                    self.down_market = MarketPanel(classes="panel",token_name="DOWN/NO Market Data")
+                    yield self.up_market
+                    yield self.down_market
 
                 with Horizontal(classes="right-sub-horizontal"):  
-                    self.up_depth = DepthPanel(classes="panel",token_name="UP N Depth")
-                    self.down_depth = DepthPanel(classes="panel",token_name="DOWN N Depth")
+                    self.up_depth = DepthPanel(classes="panel",token_name="UP/YES N Depth")
+                    self.down_depth = DepthPanel(classes="panel",token_name="DOWN/NO N Depth")
                     yield self.up_depth
                     yield self.down_depth
 
                 with Horizontal(classes="right-sub-horizontal"):
-                    self.up_n_orderbook = OrderBookPanel(classes="panel",token_name="UP N OrderBook")
-                    self.down_n_orderbook = OrderBookPanel(classes="panel",token_name="DOWN N OrderBook")
+                    self.up_n_orderbook = OrderBookPanel(classes="panel",token_name="UP/YES N OrderBook")
+                    self.down_n_orderbook = OrderBookPanel(classes="panel",token_name="DOWN/NO N OrderBook")
                     yield self.up_n_orderbook
                     yield self.down_n_orderbook
 
@@ -228,3 +269,5 @@ class OrderBookDashboard(App):
 
         self.up_n_orderbook.update_orderbook(metrics_up.asks[:-11:-1],metrics_up.bids[:-11:-1])
         self.down_n_orderbook.update_orderbook(metrics_down.asks[:-11:-1],metrics_down.bids[:-11:-1])
+
+        self.arb.update_metrics(metrics_up,metrics_down)
