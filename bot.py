@@ -280,10 +280,6 @@ class PolybBot:
         else:
             logger.info("slug_arb 策略未启用（SLUG_ARB_ENABLED=false）")
 
-        # --- signal handlers ----------------------------------------
-        #signal.signal(signal.SIGINT, self._handle_shutdown)
-        #signal.signal(signal.SIGTERM, self._handle_shutdown)
-    
         # --- strategy init ------------------------------------------
         if self._strategy is not None:
             self._strategy.on_start()
@@ -347,9 +343,7 @@ class PolybBot:
     # Tick
     # ------------------------------------------------------------------ #
 
-    async def _tick(self) -> None:
-
-
+    async def _tick(self) -> None:1
         # 1. BTC 5m 涨跌市场买卖策略
         if settings.btc_5min_enabled:
             try:
@@ -362,10 +356,12 @@ class PolybBot:
                     error_message=str(exc),
                 )
                 return
+            # 为终端可视化界面提供数据
             self._shared_state.metrics_up = OrderBookAnalyzer.analyze(up_data,slippage_notional=50.0)
             self._shared_state.metrics_down = OrderBookAnalyzer.analyze(down_data,slippage_notional=50.0)
             logger.debug("up_data metrics: %s", self._shared_state.metrics_up)
             logger.debug("down_data metrics: %s", self._shared_state.metrics_down)
+            
             # 检测市场切换 — 新市场开始时撤销上一个市场的所有残留挂单
             current_condition_id = up_data.condition_id
             if self._last_condition_id and self._last_condition_id != current_condition_id:
@@ -417,12 +413,16 @@ class PolybBot:
 
         # 2a. 套利策略 tick（高优先级，在普通策略之前执行）
         if self._arb_strategy is not None:
-
             try:
+                up_data, down_data = await self._market_data.fetch()
                 await self._arb_strategy.on_tick(up_data, down_data)
             except Exception as exc:
                 logger.exception("[btc_arb] on_tick 异常: %s", exc)
-
+                self._audit.record(
+                    action=AuditAction.MARKET_DATA_FETCH,
+                    result=AuditResult.FAILURE,
+                    error_message=str(exc),
+                )
         # 2b. 多选市场套利 tick（每个市场独立运行）
         for e_data, e_arb in self._election_components:
             try:
@@ -433,7 +433,6 @@ class PolybBot:
 
         # 2c. 通用 Slug 套利 tick
         if self._slug_arb_strategy is not None:
-
             try:
                 await self._slug_arb_strategy.on_tick()
             except Exception as exc:

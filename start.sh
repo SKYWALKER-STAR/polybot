@@ -2,4 +2,4 @@
 
 
 source /etc/profile.d/clash-for-linux.sh
-source /software/polybot/venv/bin/activate && proxy_on && nohup python bot.py  &
+source /software/polybot/venv/bin/activate && proxy_on && nohup python bot.py  --mode console &
