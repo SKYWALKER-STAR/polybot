@@ -52,6 +52,7 @@ from typing import Optional
 from core.client import PolymarketClient
 from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest, OrderResult
+from strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -147,13 +148,12 @@ class ArbOpportunity:
 # 策略主类
 # ------------------------------------------------------------------ #
 
-class BtcArbStrategy:
+class BtcArbStrategy(BaseStrategy):
     """
     BTC 5分钟 YES/NO 价差无风险套利策略。
 
-    与 BaseStrategy 不同，该策略需要直接访问 PolymarketClient（执行链上
-    split/merge），因此独立于 BaseStrategy 体系，由 bot.py 中的 ArbBot
-    专门驱动。
+    该策略实现 BaseStrategy 接口，但为了执行链上 split/merge，需要直接访问
+    PolymarketClient，并由 bot.py 的套利流程驱动。
 
     线程安全
     --------
@@ -164,28 +164,32 @@ class BtcArbStrategy:
 
     def __init__(
         self,
-        client: PolymarketClient,
-        order_manager: OrderManager,
         config: Optional[ArbConfig] = None,
     ) -> None:
-        self._client = client
-        self._order_manager = order_manager
         self._cfg = config or ArbConfig()
+        # infra 依赖通过 bind() 注入
+        self._client = None
+        self._order_manager = None
+        self._market_data_service = None
 
-        # 上次套利完成时间（monotonic，用于冷却计时）
         self._last_arb_ts: float = 0.0
-
-        # 当前是否有套利正在执行（防止并发重入）
         self._arb_in_flight: bool = False
-
-        # 统计
         self._stats = _ArbStats()
+
+    def bind(self, *, client=None, order_manager=None, market_data_service=None, **kwargs) -> None:
+        """注入基础设施依赖（由 bot 在 start() 后统一调用）。"""
+        if client is not None:
+            self._client = client
+        if order_manager is not None:
+            self._order_manager = order_manager
+        if market_data_service is not None:
+            self._market_data_service = market_data_service
 
     # ------------------------------------------------------------------ #
     # 生命周期
     # ------------------------------------------------------------------ #
 
-    def on_start(self) -> None:
+    async def on_start(self) -> None:
         mode_tag = "【观察模式 — 仅打印，不交易】" if self._cfg.observe_mode else "【交易模式】"
         logger.info(
             "[%s] 套利策略启动 %s — merge阈值=%.4f  split阈值=%.4f  "
@@ -212,15 +216,21 @@ class BtcArbStrategy:
     # 主入口（每次 tick 由 ArbBot 调用）
     # ------------------------------------------------------------------ #
 
-    async def on_tick(
-        self,
-        yes_data: MarketData,
-        no_data: MarketData,
-    ) -> None:
+    async def on_tick(self) -> list:
         """
-        检测套利机会并立即异步执行。
+        自行获取行情，检测套利机会并立即异步执行。
         本方法设计为非阻塞快速返回：若已有套利在途或仍在冷却期则立即跳过。
+        套利类策略内部自行下单，不向 bot 返回 OrderRequest 列表。
         """
+        if self._market_data_service is None:
+            logger.error("[%s] MarketDataService 未绑定，跳过本次 tick。", self.name)
+            return []
+        try:
+            yes_data, no_data = await self._market_data_service.fetch()
+        except Exception as exc:
+            logger.error("[%s] 行情数据获取失败，跳过本次 tick: %s", self.name, exc)
+            return []
+
         if self._arb_in_flight:
             logger.debug("[%s] 套利已在途，跳过本 tick。", self.name)
             return
@@ -259,7 +269,7 @@ class BtcArbStrategy:
 
         opp = self._detect_opportunity(yes_data, no_data)
         if opp is None:
-            return
+            return []
 
         # ---- 套利机会：始终以 INFO 级完整打印触发时刻的订单簿快照 ----
         observe_tag = "  【观察模式 — 不执行】" if self._cfg.observe_mode else ""
@@ -281,7 +291,7 @@ class BtcArbStrategy:
 
         # 观察模式：仅打印，不执行任何交易操作
         if self._cfg.observe_mode:
-            return
+            return []
 
         self._stats.total_attempts += 1
         self._arb_in_flight = True
@@ -297,6 +307,8 @@ class BtcArbStrategy:
         finally:
             self._arb_in_flight = False
             self._last_arb_ts = time.monotonic()
+
+        return []
 
     # ------------------------------------------------------------------ #
     # 机会检测

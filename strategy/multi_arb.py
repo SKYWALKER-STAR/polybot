@@ -52,6 +52,8 @@ from typing import Optional
 
 from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest
+from core.event_market_resolver import EventMarketDataService, EventMarketResolver
+from strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +145,7 @@ class _ArbStats:
 # 策略主类
 # ------------------------------------------------------------------ #
 
-class MultiArbStrategy:
+class MultiArbStrategy(BaseStrategy):
     """
     多选市场每个候选结果的独立 binary merge/split 套利策略。
 
@@ -159,17 +161,28 @@ class MultiArbStrategy:
     def __init__(
         self,
         event_slug: str,
-        order_manager: OrderManager,
         config: Optional[MultiArbConfig] = None,
     ) -> None:
         self._slug = event_slug
         self._label = f"multi_arb:{event_slug}"
-        self._order_manager = order_manager
         self._cfg = config or MultiArbConfig()
+        # infra 依赖通过 bind() 注入
+        self._order_manager: Optional[OrderManager] = None
+        self._data_service: Optional[EventMarketDataService] = None
 
         self._last_arb_ts: float = 0.0
         self._arb_in_flight: bool = False
         self._stats = _ArbStats()
+
+    def bind(self, *, order_manager=None, ws_feed=None, **kwargs) -> None:
+        """注入 OrderManager 和 WsMarketFeed，并初始化行情数据服务。"""
+        if order_manager is not None:
+            self._order_manager = order_manager
+        if ws_feed is not None:
+            resolver = EventMarketResolver(event_slug=self._slug, cache_ttl=300.0)
+            self._data_service = EventMarketDataService(
+                resolver=resolver, ws_feed=ws_feed
+            )
 
     @property
     def name(self) -> str:
@@ -179,7 +192,15 @@ class MultiArbStrategy:
     # 生命周期
     # ------------------------------------------------------------------ #
 
-    def on_start(self) -> None:
+    async def on_start(self) -> None:
+        if self._data_service is not None:
+            try:
+                await self._data_service.ensure_subscribed()
+            except Exception as exc:
+                logger.warning(
+                    "[%s] token 订阅失败，将在首个 tick 时重试: %s",
+                    self._label, exc,
+                )
         mode_tag = "【观察模式 — 仅打印，不交易】" if self._cfg.observe_mode else "【交易模式】"
         logger.info(
             "[%s] 多选市场套利策略启动 %s\n"
@@ -208,16 +229,30 @@ class MultiArbStrategy:
     # Tick
     # ------------------------------------------------------------------ #
 
-    async def on_tick(
+    async def on_tick(self) -> list:
+        """
+        自行从 EventMarketDataService 获取行情，对每个结果市场检测并执行套利。
+        套利类策略内部自行下单，不向 bot 返回 OrderRequest 列表。
+        """
+        if self._data_service is None:
+            logger.error("[%s] 数据服务未绑定，跳过本次 tick。", self._label)
+            return []
+        if self._order_manager is None:
+            logger.error("[%s] OrderManager 未绑定，跳过本次 tick。", self._label)
+            return []
+        try:
+            outcomes = await self._data_service.fetch()
+        except Exception as exc:
+            logger.warning("[%s] 行情数据获取失败，跳过本 tick: %s", self._label, exc)
+            return []
+        await self._process_outcomes(outcomes)
+        return []
+
+    async def _process_outcomes(
         self,
         outcomes: list[tuple[MarketData, MarketData, str]],
     ) -> None:
-        """
-        Parameters
-        ----------
-        outcomes : list of (yes_data, no_data, outcome_title)
-            来自 ``EventMarketDataService.fetch()`` 的数据，每项对应一个结果。
-        """
+        """处理所有结果市场的套利检测与执行（原 on_tick 逻辑）。"""
         if not outcomes:
             return
 
@@ -228,7 +263,6 @@ class MultiArbStrategy:
         bid_sum = sum(yes_bids)
 
         _log = logger.info if self._cfg.observe_mode else logger.debug
-        #_log = logger.info
         _log(
             "[%s] 跨结果价格 — "
             "YES ask之和=%.4f (偏离$1=%.4f)  "

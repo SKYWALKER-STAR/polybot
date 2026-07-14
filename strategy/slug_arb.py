@@ -63,6 +63,7 @@ from core.order_manager import OrderManager, OrderRequest
 from core.ws_market_feed import WsMarketFeed
 from audit.logger import AuditLogger
 from core.order_book import OrderBookAnalyzer
+from strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ class _MarketState:
 # 策略主类
 # ------------------------------------------------------------------ #
 
-class SlugArbStrategy:
+class SlugArbStrategy(BaseStrategy):
     """
     通用 Slug 驱动的 Binary Split/Merge 无风险套利策略。
 
@@ -204,31 +205,35 @@ class SlugArbStrategy:
 
     def __init__(
         self,
-        client: PolymarketClient,
-        order_manager: OrderManager,
-        ws_feed: WsMarketFeed,
         slugs: list[str],
-        shared_state: dict,  # 新增
         config: Optional[SlugArbConfig] = None,
     ) -> None:
-        self._client = client
-        self._order_manager = order_manager
-        self._ws_feed = ws_feed
         self._cfg = config or SlugArbConfig()
         self._slugs = slugs
         self._audit = AuditLogger()
-        self._shared_state = shared_state  # 新增
-
-        # 每个 slug 对应独立的 Resolver + DataService（复用现有基础设施）
-        # list[(slug, EventMarketDataService)]
+        # infra 依赖通过 bind() 注入
+        self._client = None
+        self._order_manager = None
+        self._ws_feed = None
+        self._shared_state = None
         self._data_services: list[tuple[str, EventMarketDataService]] = []
-        for slug in slugs:
-            resolver = EventMarketResolver(slug, cache_ttl=300.0)
-            svc = EventMarketDataService(resolver=resolver, ws_feed=ws_feed)
-            self._data_services.append((slug, svc))
-
-        # 每个 condition_id 对应独立的运行状态
         self._states: dict[str, _MarketState] = {}
+
+    def bind(self, *, client=None, order_manager=None, ws_feed=None, shared_state=None, **kwargs) -> None:
+        """注入基础设施依赖，并为每个 slug 创建行情数据服务。"""
+        if client is not None:
+            self._client = client
+        if order_manager is not None:
+            self._order_manager = order_manager
+        if shared_state is not None:
+            self._shared_state = shared_state
+        if ws_feed is not None:
+            self._ws_feed = ws_feed
+            self._data_services = []
+            for slug in self._slugs:
+                resolver = EventMarketResolver(slug, cache_ttl=300.0)
+                svc = EventMarketDataService(resolver=resolver, ws_feed=ws_feed)
+                self._data_services.append((slug, svc))
 
     # ------------------------------------------------------------------ #
     # 生命周期

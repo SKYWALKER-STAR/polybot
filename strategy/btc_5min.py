@@ -113,12 +113,26 @@ class Btc5MinStrategy(BaseStrategy):
     def __init__(self, config: Optional[StrategyConfig] = None) -> None:
         self._cfg = config or StrategyConfig()
         self._state = _StrategyState()
+        self._market_data_service = None
+        self._latest_up_data: Optional[MarketData] = None
+        self._latest_down_data: Optional[MarketData] = None
+
+    def bind(self, *, market_data_service=None, **kwargs) -> None:
+        """注入 MarketDataService（由 bot 在 start() 后统一绑定）。"""
+        if market_data_service is not None:
+            self._market_data_service = market_data_service
+
+    @property
+    def latest_market_data(self) -> Optional[tuple[MarketData, MarketData]]:
+        if self._latest_up_data is None or self._latest_down_data is None:
+            return None
+        return self._latest_up_data, self._latest_down_data
 
     # ------------------------------------------------------------------ #
     # BaseStrategy 接口
     # ------------------------------------------------------------------ #
 
-    def on_start(self) -> None:
+    async def on_start(self) -> None:
         logger.info(
             "[%s] 策略启动 — FOK %.2f USDC + FAK %.2f USDC + GTC %.2f USDC，对冲 %.2f USDC，"
             "目标价格 %.2f ±%.0f%%，入场窗口 %ds",
@@ -132,7 +146,20 @@ class Btc5MinStrategy(BaseStrategy):
             self._cfg.entry_seconds_before_settlement,
         )
 
-    def on_tick(self, up_data: MarketData, down_data: MarketData) -> list[OrderRequest]:
+    async def on_tick(self) -> list[OrderRequest]:
+        if self._market_data_service is None:
+            logger.error("[%s] MarketDataService 未绑定，跳过本次 tick。", self.name)
+            return []
+
+        try:
+            up_data, down_data = await self._market_data_service.fetch()
+        except Exception as exc:
+            logger.error("[%s] 行情数据获取失败，跳过本次 tick: %s", self.name, exc)
+            return []
+
+        self._latest_up_data = up_data
+        self._latest_down_data = down_data
+
         if not up_data.is_valid or not down_data.is_valid:
             logger.warning("[%s] 行情数据不完整，跳过本次 tick。", self.name)
             return []

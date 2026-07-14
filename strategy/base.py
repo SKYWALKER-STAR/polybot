@@ -1,8 +1,9 @@
 """
 Abstract base class for all trading strategies.
 
-A strategy receives a pair of MarketData objects (YES token, NO token) on
-every tick and returns a (possibly empty) list of OrderRequest objects.
+A strategy executes one tick and returns a (possibly empty) list of
+OrderRequest objects. The strategy itself can decide whether it pulls market
+data internally or uses injected dependencies.
 The bot runner passes those requests to OrderManager without any further
 interpretation.
 
@@ -29,8 +30,9 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
-from core.market_data import MarketData
 from core.order_manager import OrderRequest, OrderResult
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -53,18 +55,9 @@ class BaseStrategy(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def on_tick(
-        self,
-        yes_data: MarketData,
-        no_data: MarketData,
-    ) -> list[OrderRequest]:
+    async def on_tick(self) -> list[OrderRequest]:
         """
-        Called once per poll cycle with the latest market data.
-
-        Parameters
-        ----------
-        yes_data: Current snapshot for the YES outcome token.
-        no_data:  Current snapshot for the NO outcome token.
+      Called once per poll cycle.
 
         Returns
         -------
@@ -84,7 +77,16 @@ class BaseStrategy(ABC):
         The default implementation does nothing.
         """
 
-    def on_start(self) -> None:
+    def bind(self, **kwargs: Any) -> None:
+        """
+        注入基础设施依赖（client、order_manager、ws_feed 等）。
+
+        在 bot.start() 创建好基础设施后、调用 on_start() 前被调用。
+        各子类按需 override 并声明自己需要的关键字参数；
+        多余的 kwargs 统一用 **kwargs 忽略，保证接口向前兼容。
+        """
+
+    async def on_start(self) -> None:
         """Called once when the bot starts, before the first tick."""
 
     def on_stop(self) -> None:
