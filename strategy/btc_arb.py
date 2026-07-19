@@ -428,7 +428,7 @@ class BtcArbStrategy(BaseStrategy):
                         self._cfg.liquidity_min_size,
                     )
 
-        logger.info(
+        logger.debug(
             "[%s] 无套利机会 — %s ask=%.4f bid=%.4f | %s ask=%.4f bid=%.4f | "
             "merge_sum=%.4f  split_sum=%.4f",
             self.name,
