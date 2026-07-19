@@ -255,8 +255,7 @@ class BtcArbStrategy(BaseStrategy):
         no_bid  = no_data.best_bid
         merge_sum = (yes_ask or 0.0) + (no_ask or 0.0)
         split_sum = (yes_bid or 0.0) + (no_bid or 0.0)
-        _price_log = logger.info if self._cfg.observe_mode else logger.debug
-        _price_log(
+        logger.debug(
             "[%s] 订单簿市价 — "
             "%s lowest_ask=%.4f  highest_bid=%.4f | "
             "%s lowest_ask=%.4f  highest_bid=%.4f | "
