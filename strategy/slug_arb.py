@@ -62,6 +62,7 @@ from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest
 from core.ws_market_feed import WsMarketFeed
 from audit.logger import AuditLogger
+from database.models import AuditAction, AuditResult
 from core.order_book import OrderBookAnalyzer
 from strategy.base import BaseStrategy
 
@@ -414,9 +415,20 @@ class SlugArbStrategy(BaseStrategy):
                 "outcome_title": opp.outcome_title,
                 "mode": opp.mode.value,
                 "condition_id": opp.condition_id,
+                "yes_token_id": opp.yes_token_id,
+                "no_token_id": opp.no_token_id,
+                "yes_outcome": opp.yes_outcome,
+                "no_outcome": opp.no_outcome,
                 "yes_price": opp.yes_price,
                 "no_price": opp.no_price,
-                "sum_price": opp.yes_price + opp.no_price,
+                "yes_best_ask": yes_ask,
+                "yes_best_bid": yes_bid,
+                "no_best_ask": no_ask,
+                "no_best_bid": no_bid,
+                "merge_sum": merge_sum,
+                "split_sum": split_sum,
+                "merge_deviation": 1.0 - merge_sum,
+                "split_deviation": split_sum - 1.0,
                 "trade_size_usdc": opp.trade_size_usdc,
                 "gross_profit": opp.gross_profit,
                 "net_profit": opp.net_profit,

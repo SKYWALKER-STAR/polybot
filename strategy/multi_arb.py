@@ -53,6 +53,8 @@ from typing import Optional
 from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest
 from core.event_market_resolver import EventMarketDataService, EventMarketResolver
+from audit.logger import AuditLogger
+from database.models import AuditAction, AuditResult
 from strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -166,6 +168,7 @@ class MultiArbStrategy(BaseStrategy):
         self._slug = event_slug
         self._label = f"multi_arb:{event_slug}"
         self._cfg = config or MultiArbConfig()
+        self._audit = AuditLogger()
         # infra 依赖通过 bind() 注入
         self._order_manager: Optional[OrderManager] = None
         self._data_service: Optional[EventMarketDataService] = None
@@ -321,6 +324,34 @@ class MultiArbStrategy(BaseStrategy):
                 opp.yes_outcome, opp.no_outcome, merge_sum, 1.0 - merge_sum,
                 opp.yes_outcome, opp.no_outcome, split_sum, split_sum - 1.0,
                 opp.trade_size_usdc, opp.net_profit,
+            )
+
+            self._audit.record(
+                action=AuditAction.ARB_OPPORTUNITY,
+                result=AuditResult.SUCCESS,
+                details={
+                    "strategy": self.name,
+                    "event_slug": self._slug,
+                    "outcome_title": opp.outcome_title,
+                    "mode": opp.mode.value,
+                    "condition_id": opp.condition_id,
+                    "yes_token_id": opp.yes_token_id,
+                    "no_token_id": opp.no_token_id,
+                    "yes_outcome": opp.yes_outcome,
+                    "no_outcome": opp.no_outcome,
+                    "yes_best_ask": yes_ask,
+                    "yes_best_bid": yes_bid,
+                    "no_best_ask": no_ask,
+                    "no_best_bid": no_bid,
+                    "merge_sum": merge_sum,
+                    "split_sum": split_sum,
+                    "merge_deviation": 1.0 - merge_sum,
+                    "split_deviation": split_sum - 1.0,
+                    "trade_size_usdc": opp.trade_size_usdc,
+                    "gross_profit": opp.gross_profit,
+                    "net_profit": opp.net_profit,
+                    "observe_mode": self._cfg.observe_mode,
+                },
             )
 
             if self._cfg.observe_mode:
