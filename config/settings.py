@@ -6,7 +6,7 @@ All sensitive values (private key, API credentials) must never be hard-coded.
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     wallet_address: Optional[str] = Field(
         default=None,
         description="Polymarket wallet address (defaults to signer address when unset)",
+    )
+    relayer_api_key: Optional[str] = Field(
+        default=None,
+        description="Relayer API key for authenticated requests",
+    )
+    relayer_api_key_address: Optional[str] = Field(
+        default=None,
+        description="Ethereum address associated with the relayer API key",
     )
 
     # ------------------------------------------------------------------ #
@@ -251,6 +259,12 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_0x(cls, v: str) -> str:
         return v.removeprefix("0x")
+
+    @model_validator(mode="after")
+    def _validate_relayer_auth(self) -> "Settings":
+        if self.relayer_api_key and not self.relayer_api_key_address:
+            raise ValueError("RELAYER_API_KEY_ADDRESS is required when RELAYER_API_KEY is set")
+        return self
 
 
 # Module-level singleton — import this everywhere.

@@ -101,6 +101,9 @@ cp .env.example .env
 #   PRIVATE_KEY           — 钱包私钥（hex）
 #   BTC_5MIN_START_TIMESTAMP — 初始市场的 Unix 时间戳
 #   DATABASE_URL          — PostgreSQL DSN
+# 可选（仅当你需要 relayer/gasless 认证时）：
+#   RELAYER_API_KEY
+#   RELAYER_API_KEY_ADDRESS  — 与 RELAYER_API_KEY 绑定的钱包地址
 ```
 
 ### 4. 创建数据库

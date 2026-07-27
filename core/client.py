@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from polymarket import AsyncSecureClient, PolymarketError
+from polymarket import AsyncSecureClient, PolymarketError, RelayerApiKey
 
 from config.settings import settings
 
@@ -45,10 +45,17 @@ class PolymarketClient:
         Initialise the authenticated SDK client.
         Must be called once before any other method.
         """
+        if settings.relayer_api_key and not settings.relayer_api_key_address:
+            raise ValueError("RELAYER_API_KEY_ADDRESS is required when RELAYER_API_KEY is set")
+
         logger.info("before create client")
         self._client = await AsyncSecureClient.create(
             private_key=settings.private_key,
             wallet=settings.wallet_address or None,
+            api_key=RelayerApiKey(
+                key=settings.relayer_api_key,
+                address=settings.relayer_api_key_address,
+            ) if settings.relayer_api_key else None,
         )
         logger.info("Connected to Polymarket via AsyncSecureClient")
 
