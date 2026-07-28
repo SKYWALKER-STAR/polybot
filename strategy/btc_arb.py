@@ -532,8 +532,6 @@ class BtcArbStrategy(BaseStrategy):
             opp.no_outcome,  no_result.success,
             buy_ms,
         )
-
-        if yes_result.success and no_result.success:
         self._audit.record(
             action=AuditAction.PLACE_ORDER,
             result=AuditResult.SUCCESS if (yes_result.success and no_result.success) else AuditResult.FAILURE,
@@ -553,6 +551,7 @@ class BtcArbStrategy(BaseStrategy):
                 "elapsed_ms": round(buy_ms, 1),
             },
         )
+        if yes_result.success and no_result.success:
             # 双边均成交，执行链上 merge
             merge_amount = min(yes_shares, no_shares)
             await self._do_merge(opp.condition_id, merge_amount, opp.net_profit)
