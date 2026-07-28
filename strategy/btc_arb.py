@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from polymarket import UserInputError
+
 from core.client import PolymarketClient
 from core.market_data import MarketData
 from core.order_manager import OrderManager, OrderRequest, OrderResult
@@ -532,6 +534,25 @@ class BtcArbStrategy(BaseStrategy):
         )
 
         if yes_result.success and no_result.success:
+        self._audit.record(
+            action=AuditAction.PLACE_ORDER,
+            result=AuditResult.SUCCESS if (yes_result.success and no_result.success) else AuditResult.FAILURE,
+            details={
+                "strategy": self.name,
+                "phase": "merge_buy",
+                "condition_id": opp.condition_id,
+                "yes_token_id": opp.yes_token_id,
+                "no_token_id": opp.no_token_id,
+                f"{opp.yes_outcome}_ok": yes_result.success,
+                f"{opp.yes_outcome}_order_id": yes_result.order_id,
+                f"{opp.no_outcome}_ok": no_result.success,
+                f"{opp.no_outcome}_order_id": no_result.order_id,
+                "yes_price": opp.yes_price,
+                "no_price": opp.no_price,
+                "trade_size_usdc": opp.trade_size_usdc,
+                "elapsed_ms": round(buy_ms, 1),
+            },
+        )
             # 双边均成交，执行链上 merge
             merge_amount = min(yes_shares, no_shares)
             await self._do_merge(opp.condition_id, merge_amount, opp.net_profit)
@@ -556,25 +577,70 @@ class BtcArbStrategy(BaseStrategy):
         condition_id: str,
         amount: float,
         expected_net_profit: float,
+        *,
+        max_retries: int = 6,
+        base_delay: float = 2.0,
     ) -> None:
-        """调用 SDK merge_positions，将 YES+NO 合并为 pUSD。"""
+        """
+        调用 SDK merge_positions，将 YES+NO 合并为 pUSD。
+
+        Data API 与 CLOB 之间存在索引延迟——FOK 买单成交后仓位不会立刻出现
+        在 list_positions 中。遇到 "You have no positions" 时自动重试，
+        使用指数退避等待 indexer 追齐，最多重试 max_retries 次。
+        其他类型的异常不重试，直接抛出。
+        """
         t0 = time.perf_counter()
-        try:
-            result = await self._client.merge_positions(
-                condition_id=condition_id,
-                amount=amount,
-            )
-            merge_ms = (time.perf_counter() - t0) * 1000
-            logger.info(
-                "[%s] ✅ MERGE 完成 — tx=%s  耗时=%.0fms  预期净利=$%.4f",
-                self.name, result.get("transaction_hash", ""), merge_ms, expected_net_profit,
-            )
-            self._stats.successes += 1
-            self._stats.total_net_profit += expected_net_profit
-        except Exception as exc:
-            logger.exception("[%s] merge_positions 失败: %s", self.name, exc)
-            self._stats.failures += 1
-            raise
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_retries + 2):  # +1 次首次尝试
+            try:
+                # 使用 "max" 让 SDK 自动取链上可 merge 的最大量，
+                # 避免 shares 舍入误差导致 requested > max_amount 错误。
+                result = await self._client.merge_positions(
+                    condition_id=condition_id,
+                    amount="max",
+                )
+                merge_ms = (time.perf_counter() - t0) * 1000
+                logger.info(
+                    "[%s] ✅ MERGE 完成 — tx=%s  耗时=%.0fms  预期净利=$%.4f  尝试次数=%d",
+                    self.name, result.get("transaction_hash", ""), merge_ms,
+                    expected_net_profit, attempt,
+                )
+                self._stats.successes += 1
+                self._stats.total_net_profit += expected_net_profit
+                return
+
+            except UserInputError as exc:
+                msg = str(exc)
+                # 仅对「仓位尚未被 indexer 收录」的暂时性错误重试
+                if "no positions" not in msg.lower() and "no complementary" not in msg.lower():
+                    logger.exception("[%s] merge_positions 参数错误（不重试）: %s", self.name, exc)
+                    self._stats.failures += 1
+                    raise
+
+                last_exc = exc
+                if attempt > max_retries:
+                    break
+
+                delay = base_delay * (2 ** (attempt - 1))  # 2s, 4s, 8s, 16s, 32s, 64s
+                logger.warning(
+                    "[%s] MERGE 仓位未就绪（第 %d/%d 次），等待 %.0fs 后重试…  原因: %s",
+                    self.name, attempt, max_retries, delay, exc,
+                )
+                await asyncio.sleep(delay)
+
+            except Exception as exc:
+                logger.exception("[%s] merge_positions 失败: %s", self.name, exc)
+                self._stats.failures += 1
+                raise
+
+        logger.error(
+            "[%s] MERGE 重试耗尽（共 %d 次），仓位始终未被 indexer 收录。"
+            " condition_id=%s  请人工检查链上 YES/NO token 是否仍滞留于钱包。",
+            self.name, max_retries + 1, condition_id,
+        )
+        self._stats.failures += 1
+        raise last_exc  # type: ignore[misc]
 
     # ------------------------------------------------------------------ #
     # Split 套利执行
@@ -656,6 +722,25 @@ class BtcArbStrategy(BaseStrategy):
             opp.yes_outcome, yes_result.success,
             opp.no_outcome,  no_result.success,
             sell_ms,
+        )
+        self._audit.record(
+            action=AuditAction.PLACE_ORDER,
+            result=AuditResult.SUCCESS if (yes_result.success and no_result.success) else AuditResult.FAILURE,
+            details={
+                "strategy": self.name,
+                "phase": "split_sell",
+                "condition_id": opp.condition_id,
+                "yes_token_id": opp.yes_token_id,
+                "no_token_id": opp.no_token_id,
+                f"{opp.yes_outcome}_ok": yes_result.success,
+                f"{opp.yes_outcome}_order_id": yes_result.order_id,
+                f"{opp.no_outcome}_ok": no_result.success,
+                f"{opp.no_outcome}_order_id": no_result.order_id,
+                "yes_price": opp.yes_price,
+                "no_price": opp.no_price,
+                "trade_size_usdc": opp.trade_size_usdc,
+                "elapsed_ms": round(sell_ms, 1),
+            },
         )
 
         if yes_result.success and no_result.success:
